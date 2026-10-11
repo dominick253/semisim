@@ -4,6 +4,13 @@ Authoritative prose version of the Phase 1 physics model. The single source of
 truth for code constants is `scripts/physics/PHYSICS_CONSTANTS.gd`. A constant
 change must update both files in the same commit.
 
+## 0. Coordinate convention
+
+-Z is forward (Godot convention, vehicles face -Z), +Y up, +X left. Tractor
+origin: rear (drive) axle contact patch. Trailer origin: kingpin, trailer body
+extending toward +Z (rearward). Deviations D1, D4 and D5 in
+`docs/DEVIATIONS.md` correct spec values that violated this convention.
+
 ## 1. Architecture
 
 Hybrid model. Two `RigidBody3D` bodies (tractor, trailer) joined by one
@@ -18,19 +25,22 @@ per frame: 16.
 
 Tractor:
 - Mass: 8400 kg.
-- Origin: ground center of the wheelbase.
+- Origin: rear (drive) axle contact patch.
 - Rear axle center: (0, 0.563, 0.00). Front axle center: (0, 0.554, -6.50).
-- CoM: (0, 1.30, -0.75). Fifth wheel center: (0, 1.30, -7.45).
-- Box: 2.50 x 3.30 x 10.50 m. Inertia as a uniform box: Ix 32,133,
-  Iy 30,975, Iz 9,758 kg m^2.
+- CoM: (0, 1.30, -0.75). Fifth wheel center: (0, 1.30, -4.55) (D1: spec value
+  -7.45 is ahead of the steer axle and physically impossible; -4.55 is the
+  real tandem position between the axles).
+- Box: 2.50 x 3.30 x 10.50 m. Inertia as a uniform box: Ix 84,798,
+  Iy 81,550, Iz 11,998 kg m^2 (D8: recomputed from the spec's own method).
 
 Trailer:
 - Mass empty: 7000 kg.
 - Origin: the kingpin.
 - Bogie axle centers: (0, 0.563, 11.80) and (0, 0.563, 12.60).
-- CoM empty: (0, 1.55, -7.70).
+- CoM empty: (0, 1.55, +7.70) (D4: sign corrected to the bogie side).
 - Box: 2.59 x 4.07 x 16.15 m.
-- Inertia empty (uniform box): Ix 415,000, Iy 331,000, Iz 113,600 kg m^2.
+- Inertia empty (uniform box): Ix 161,809, Iy 156,060, Iz 13,576 kg m^2
+  (D9: recomputed from the spec's own method).
 
 ## 3. Tire model (Pacejka magic formula, per wheel)
 
@@ -114,11 +124,13 @@ on dry stops in 24 to 34 m.
 ## 7. Loading (loaded vs unloaded)
 
 Cargo mass slider 0 to 29,000 kg, default 20,000 kg. Cargo CoM (trailer-local)
-(0, 1.70, -5.80). Combined trailer CoM recomputed by mass weighting: empty
-(0, 1.55, -7.70), full 29,000 kg -> (0, 1.794, -6.58). Trailer inertia
-recomputed as a uniform box of the combined mass. Combined combination mass
-44,400 kg. Static steer axle load: 5,886 kg empty, 7,417 kg full (must stay at
-or under the 7,711 kg US legal cap in tests).
+(0, 1.70, +9.41) (D5: sign corrected, magnitude set so the full 29,000 kg load
+reproduces the spec's own 7,417 kg steer axle target instead of overloading the
+combination 2x). Combined trailer CoM recomputed by mass weighting: empty
+(0, 1.55, +7.70), full 29,000 kg -> (0, 1.671, +9.078) (D6). Trailer inertia
+recomputed as a uniform box of the combined mass (full: Iy 802,592 kg m^2, D7).
+Combined combination mass 44,400 kg. Static steer axle load: 2,777 kg empty,
+7,419 kg full (D10), both at or under the pinned 7,711 kg cap in tests.
 
 ## 8. Suspension and steering
 

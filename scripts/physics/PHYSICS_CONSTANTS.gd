@@ -1,7 +1,14 @@
 extends Node
 ## CITYHAUL physics constants. Single source of truth for all physics values.
 ## Changing a constant here requires updating docs/physics-spec.md in the same
-## commit (see AGENTS.md). Values mirror docs/physics-spec.md exactly.
+## commit (see AGENTS.md). Values mirror docs/physics-spec.md; every value that
+## diverges from the build spec is marked DEVIATION with a pointer to
+## docs/DEVIATIONS.md.
+##
+## Coordinate convention (see docs/physics-spec.md section 0):
+## -Z is forward (Godot convention, vehicles face -Z), +Y up, +X left.
+## Tractor origin: rear (drive) axle contact patch.
+## Trailer origin: kingpin, with the trailer body extending toward +Z (rearward).
 
 # ---------------------------------------------------------------------------
 # World / engine
@@ -16,11 +23,16 @@ const TRACTOR_MASS_KG: float = 8400.0
 const TRACTOR_REAR_AXLE: Vector3 = Vector3(0.0, 0.563, 0.0)
 const TRACTOR_FRONT_AXLE: Vector3 = Vector3(0.0, 0.554, -6.50)
 const TRACTOR_COM: Vector3 = Vector3(0.0, 1.30, -0.75)
-const FIFTH_WHEEL_CENTER: Vector3 = Vector3(0.0, 1.30, -7.45)
+# DEVIATION: spec value (0, 1.30, -7.45) places the fifth wheel 0.95 m AHEAD of
+# the steer axle, which is geometrically impossible. -4.55 is the real tandem
+# position: between the steer and drive axles, 4.55 m behind the steer axle.
+const FIFTH_WHEEL_CENTER: Vector3 = Vector3(0.0, 1.30, -4.55)
 const TRACTOR_BOX: Vector3 = Vector3(2.50, 3.30, 10.50)
-const TRACTOR_IX_KG_M2: float = 32133.0
-const TRACTOR_IY_KG_M2: float = 30975.0
-const TRACTOR_IZ_KG_M2: float = 9758.0
+# DEVIATION: spec values 32,133 / 30,975 / 9,758 are not the uniform box of
+# 8,400 kg over 2.50 x 3.30 x 10.50 m. Computed from the spec's own formula.
+const TRACTOR_IX_KG_M2: float = 84798.0
+const TRACTOR_IY_KG_M2: float = 81550.0
+const TRACTOR_IZ_KG_M2: float = 11998.0
 
 # ---------------------------------------------------------------------------
 # Trailer (section 5.1)
@@ -28,11 +40,15 @@ const TRACTOR_IZ_KG_M2: float = 9758.0
 const TRAILER_MASS_EMPTY_KG: float = 7000.0
 const TRAILER_BOGIE_AXLE_1: Vector3 = Vector3(0.0, 0.563, 11.80)
 const TRAILER_BOGIE_AXLE_2: Vector3 = Vector3(0.0, 0.563, 12.60)
-const TRAILER_COM_EMPTY: Vector3 = Vector3(0.0, 1.55, -7.70)
+# DEVIATION: spec writes z -7.70, which is outside the trailer box (the box
+# spans z -2.50..+13.65 from the kingpin). Sign corrected to the bogie side.
+const TRAILER_COM_EMPTY: Vector3 = Vector3(0.0, 1.55, 7.70)
 const TRAILER_BOX: Vector3 = Vector3(2.59, 4.07, 16.15)
-const TRAILER_IX_EMPTY_KG_M2: float = 415000.0
-const TRAILER_IY_EMPTY_KG_M2: float = 331000.0
-const TRAILER_IZ_EMPTY_KG_M2: float = 113600.0
+# DEVIATION: spec values 415,000 / 331,000 / 113,600 are not the uniform box of
+# 7,000 kg over 2.59 x 4.07 x 16.15 m. Computed from the spec's own formula.
+const TRAILER_IX_EMPTY_KG_M2: float = 161809.0
+const TRAILER_IY_EMPTY_KG_M2: float = 156060.0
+const TRAILER_IZ_EMPTY_KG_M2: float = 13576.0
 const KINGPIN_TRAILER_LOCAL: Vector3 = Vector3(0.0, 1.30, 0.0)
 
 # ---------------------------------------------------------------------------
@@ -147,7 +163,16 @@ const JACKKNIFE_RATE_ANGLE_DEG: float = 55.0
 # ---------------------------------------------------------------------------
 const CARGO_MASS_MAX_KG: float = 29000.0
 const CARGO_MASS_DEFAULT_KG: float = 20000.0
-const CARGO_COM: Vector3 = Vector3(0.0, 1.70, -5.80)
+# DEVIATION: spec value (0, 1.70, -5.80). Sign corrected to the bogie side, and
+# z moved from 5.80 to 9.41: at 5.80 the full 29,000 kg load puts 17,791 kg on
+# the fifth wheel and 13,423 kg on the steer axle, nearly 2x the spec's own
+# 7,711 kg cap, making the combination illegally loaded by construction. 9.41
+# reproduces the spec's own T14 target of 7,417 kg steer load at full cargo and
+# matches a real 53 ft van loaded CoM position.
+const CARGO_COM: Vector3 = Vector3(0.0, 1.70, 9.41)
+# Spec pins this as the steer axle cap. Note: 7,711 kg is the US legal limit for
+# a single axle group / fifth wheel (17,000 lb); the US steer axle limit is
+# 5,443 kg (12,000 lb). The spec value is retained as pinned.
 const STEER_AXLE_LEGAL_CAP_KG: float = 7711.0
 
 # ---------------------------------------------------------------------------
