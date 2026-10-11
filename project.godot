@@ -1,0 +1,38 @@
+; Engine configuration file.
+; CITYHAUL - pinned settings. Do not deviate without a docs/DEVIATIONS.md entry.
+
+config_version=5
+
+[application]
+
+config/name="CITYHAUL"
+config/description="Technical semi truck simulator. Phase 1: driving core."
+run/main_scene="res://scenes/boot.tscn"
+config/features=PackedStringArray("4.7", "Forward Plus")
+
+[autoload]
+
+PHYSICS_CONSTANTS="*res://scripts/physics/PHYSICS_CONSTANTS.gd"
+GAME_STATE="*res://scripts/autoloads/game_state.gd"
+SAVE_SYS="*res://scripts/autoloads/save_sys.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+
+[editor_plugins]
+
+enabled=PackedStringArray("godot_mcp")
+
+[physics]
+
+common/physics_ticks_per_second=120
+common/max_physics_steps_per_frame=16
+3d/physics_engine="Jolt"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+2d/culling_enabled=true
