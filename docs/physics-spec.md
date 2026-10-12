@@ -198,7 +198,26 @@ consumes momentary actions once per press.
   `sqrt(R^2 + L^2 + 2 R L sin(articulation))`, and the no-scrub steady-state
   articulation is `asin(-L / R)`.
 
-## 9. Loading (loaded vs unloaded)
+## 9. HUD and debug overlay (section 12 of the build spec)
+
+`scripts/ui/hud.gd` (`scenes/ui/hud.tscn`) builds every widget by script so each
+gauge range traces to `PHYSICS_CONSTANTS`. Font: Godot 4.7 built-in Open Sans
+SemiBold at 16 px (DEVIATIONS D30).
+
+- Ranges: speed 0..160 km/h, tach 0..1800 rpm with redline 1750, air 0..120 psi,
+  articulation -75..+75 deg (center at half scale), retarder 0..5, strikes 0/3.
+- Thresholds reuse the pinned physics values: air yellow at `AIR_WARN_PSI` 60,
+  red at `AIR_SPRING_BRAKE_PSI` 40. Articulation yellow at 45 deg, red at 60 deg
+  (`HUD_ARTICULATION_WARN_DEG` / `HUD_ARTICULATION_DANGER_DEG`).
+- Gear indicator: `R`, `N`, or range/gear (`H3` third high, `L8` eighth low).
+- Debug overlay (F3, hidden by default): one slip line per wheel in pinned order
+  (slip ratio, slip angle, normal force), then articulation, articulation rate,
+  fifth wheel load, combination mass, CoM offsets, physics step ms and FPS.
+- The reason flash runs on simulated time (DEVIATIONS D29) and keeps its own row
+  so it can never overlap a gauge. Layout is asserted mechanically: 66 pairwise
+  widget rect non-intersection plus enclosure in the backing panel.
+
+## 10. Loading (loaded vs unloaded)
 
 Cargo mass slider 0 to 29,000 kg, default 20,000 kg. Cargo CoM (trailer-local)
 (0, 1.70, +9.41) (D5: sign corrected, magnitude set so the full 29,000 kg load
@@ -209,7 +228,7 @@ recomputed as a uniform box of the combined mass (full: Iy 802,592 kg m^2, D7).
 Combined combination mass 44,400 kg. Static steer axle load: 2,777 kg empty,
 7,419 kg full (D10), both at or under the pinned 7,711 kg cap in tests.
 
-## 10. Suspension and steering
+## 11. Suspension and steering
 
 Raycast suspension per wheel: spring 55,000 N/m (steer), 65,000 N/m (drive and
 trailer), damper 3,500 N s/m, travel +/- 0.12 m. Anti-roll bars: tractor front
@@ -222,7 +241,7 @@ wheel turns from center. Targets: tractor alone curb-to-curb turning radius
 7.6 m; loaded combination off-tracking under 1.2 m on a 15 m radius circle at
 12 km/h.
 
-## 11. Collision and damage
+## 12. Collision and damage
 
 Convex decomposition collision from the GLB (`scene_import` option, max 16
 convex pieces per body), `contact_monitor = true`, `max_contacts_reported = 8`.

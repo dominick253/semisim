@@ -135,6 +135,24 @@ const CLUTCH_CAPACITY_NM: float = 3500.0
 const CLUTCH_TRAVEL_START: float = 0.20
 const CLUTCH_TRAVEL_END: float = 0.80
 
+# HUD (section 12). Gauge ranges, warning thresholds and the pinned font size.
+const HUD_FONT_SIZE: int = 16
+const HUD_FONT_NAME: String = "Open Sans SemiBold"
+const HUD_FONT_STYLE: String = "SemiBold"
+const HUD_FONT_WEIGHT: int = 600
+const HUD_SPEED_MAX_KMH: float = 160.0
+const HUD_TACH_MAX_RPM: float = 1800.0
+const HUD_TACH_REDLINE_RPM: float = 1750.0
+const HUD_AIR_MAX_PSI: float = 120.0
+const HUD_ARTICULATION_MAX_DEG: float = 75.0
+const HUD_ARTICULATION_WARN_DEG: float = 45.0
+const HUD_ARTICULATION_DANGER_DEG: float = 60.0
+const HUD_FLASH_SECONDS: float = 3.0
+const STRIKE_LIMIT: int = 3
+const HUD_COLOR_OK: Color = Color(0.86, 0.88, 0.90)
+const HUD_COLOR_WARN: Color = Color(0.92, 0.76, 0.12)
+const HUD_COLOR_DANGER: Color = Color(0.90, 0.20, 0.16)
+
 # Gear range indices. Transmission.GearRange uses the same values; the pinned
 # constants exist so the shared no-op rule table can compare ranges without a
 # circular class dependency.

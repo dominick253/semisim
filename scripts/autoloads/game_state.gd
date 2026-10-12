@@ -21,6 +21,7 @@ var strikes: int = 0
 var cone_contacts: int = 0
 var jackknife_events: int = 0
 var cargo_mass_kg: float = PHYSICS_CONSTANTS.CARGO_MASS_DEFAULT_KG
+var challenge_elapsed_s: float = 0.0
 
 
 func set_vehicle_state(new_state: int) -> void:

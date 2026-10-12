@@ -20,6 +20,10 @@ func before_all() -> void:
 func after_all() -> void:
 	if is_instance_valid(_yard):
 		_yard.queue_free()
+		# queue_free is deferred; without a frame the yard and its children
+		# outlive the script and GUT reports them as unfreed.
+		await get_tree().physics_frame
+		await get_tree().physics_frame
 
 
 # --- helpers ---------------------------------------------------------------
