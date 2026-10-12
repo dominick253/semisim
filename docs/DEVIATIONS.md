@@ -52,6 +52,10 @@ original numbers cannot be produced by any physically valid geometry.
 | D39 | Audio master gain | not specified | 0.25, applied once inside the mix | The spec pins the sources but no headroom. At 0.6 the summed one second mix clipped 1012 samples of 48000; at 0.25 it clips none. Applying it in the mix rather than also in player volume keeps one attenuation point. |
 | D40 | AudioStreamGenerator teardown | not specified | Leak gate tolerates 1 leaked ObjectDB instance when an AudioStreamGenerator exists | Godot 4.7.2 headless leaks one instance for a bare AudioStreamGenerator with no project code involved (tests/scratch/probe_min_audio.tscn: generator plus player plus 10 frames plus stop). Not ours to fix; recorded so a leak assertion does not chase a phantom. |
 
+| D41 | Off-tracking remedy route (phase2-plan section 3 item 4) | widen streets or fix the geometric model | widen intersection fillets, keep street widths tight, validate every route turn | The geometric model is not wrong: predicted bogie path radius 11.18 m on a 15 m circle equals the measured 11.18 m (steer path 16.32 m minus 5.14 m). The 1.2 m target is unreachable with the pinned 10.00 m kingpin-to-bogie distance (D27). Phase 2 therefore sizes intersections from the turn envelope in `docs/world-spec.md` section 2 and rejects routes whose turns do not fit, instead of pretending the trailer tracks better than it does. Pinned clearance 2.24 m = half body 1.30 + measured plate drift 0.44 + 0.50 handling margin. |
+|| D42 | Phase 2 scope conflict | build spec section 20 lists Steam packaging prep inside Phase 2 | packaging prep moves to Phase 3 | `AGENTS.md` says Phase 2 adds the world and cargo loop and Phase 3 adds polish and packaging. Two phase documents must not disagree, so the plan follows the contract rule and section 20's packaging line is reassigned. Recorded here rather than left as a silent divergence between `docs/phase2-plan.md` and the build spec. |
+
 No silent substitutions. Each row is mirrored by a `DEVIATION` comment at the
 constant in `scripts/physics/PHYSICS_CONSTANTS.gd` and by the matching section
-in `docs/physics-spec.md`.
+in `docs/physics-spec.md`. Rows D41 and D42 are decision rows with no physics
+constant behind them.
