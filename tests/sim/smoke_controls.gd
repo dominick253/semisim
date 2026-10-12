@@ -18,6 +18,10 @@ func _ready() -> void:
 	rig.bind(controller)
 	add_child(rig)
 	rig.connect_control_layer(layer)
+	var audio: Node = load("res://scripts/audio/audio_director.gd").new()
+	audio.name = "AudioDirector"
+	audio.bind(controller)
+	add_child(audio)
 	var hud: Hud = load("res://scenes/ui/hud.tscn").instantiate()
 	add_child(hud)
 	hud.bind(controller)
@@ -40,7 +44,11 @@ func _ready() -> void:
 		" gear=",
 		controller.transmission.gear,
 		" cameras=",
-		",".join(modes)
+		",".join(modes),
+		" audio_samples=",
+		audio.sample_index,
+		" audio_hiss=",
+		audio.hiss_active
 	)
 	print("SMOKE OK")
 	get_tree().quit()
