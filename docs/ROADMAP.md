@@ -13,6 +13,10 @@ committed.
 
 ## Phase 2: world and cargo loop (NOT STARTED)
 
+Working plan: `docs/phase2-plan.md` (drafted 2026-10-12 from the measured Phase 1
+tree). The contract deliverable `docs/phase2-prompt.md` is still written at Phase 1
+exit, quoting `docs/phase1-end-state.md`.
+
 Scope: the single big city (block grid, tight streets, alleys, the yards),
 3 small towns with farms, cargo and delivery game loop, AI traffic, save and
 settings expansion, full audio, Steam packaging prep (export presets,
