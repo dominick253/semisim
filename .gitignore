@@ -7,3 +7,5 @@ docs/evidence/**/*.import
 
 # Throwaway diagnostic probes, not part of the test suite
 tests/scratch/
+
+__pycache__/
