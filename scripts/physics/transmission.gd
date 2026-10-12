@@ -21,11 +21,11 @@ func select_gear(new_gear: int, speed_m_s: float, clutch_depressed: bool) -> boo
 	## R only below 0.5 m/s; any change needs clutch depressed or auto mode.
 	if new_gear == gear:
 		return true
-	if new_gear == -1 and speed_m_s > 0.5:
-		last_reject_reason = "REVERSE NEEDS SPEED BELOW 0.5 M/S"
-		return false
-	if not automatic and not clutch_depressed:
-		last_reject_reason = "SHIFT NEEDS CLUTCH OR AUTO MODE"
+	var reason: String = NoopRules.gear_change_reason(
+		automatic, speed_m_s, clutch_depressed, gear, new_gear
+	)
+	if reason != "":
+		last_reject_reason = reason
 		return false
 	gear = new_gear
 	if new_gear >= 1 and new_gear <= 5:

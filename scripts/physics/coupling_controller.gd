@@ -27,11 +27,9 @@ func can_auto_lock(kingpin_distance: float, articulation_deg: float, rel_speed_m
 
 func can_unlock(speed_m_s: float, parking_brake_applied: bool) -> bool:
 	## Manual unlock U: speed below 0.1 m/s and parking brake applied.
-	if speed_m_s >= PHYSICS_CONSTANTS.UNLOCK_MAX_SPEED_M_S:
-		last_reject_reason = "UNLOCK NEEDS SPEED BELOW 0.1 M/S"
-		return false
-	if not parking_brake_applied:
-		last_reject_reason = "UNLOCK NEEDS PARKING BRAKE"
+	var reason: String = NoopRules.unlock_reason(speed_m_s, parking_brake_applied)
+	if reason != "":
+		last_reject_reason = reason
 		return false
 	last_reject_reason = ""
 	return true
@@ -39,11 +37,9 @@ func can_unlock(speed_m_s: float, parking_brake_applied: bool) -> bool:
 
 func can_toggle_landing(attached: bool, speed_m_s: float) -> bool:
 	## Deploy or raise only when detached and stopped.
-	if attached:
-		last_reject_reason = "LANDING GEAR NEEDS DETACHED TRAILER"
-		return false
-	if speed_m_s > 0.1:
-		last_reject_reason = "LANDING GEAR NEEDS STOPPED TRAILER"
+	var reason: String = NoopRules.landing_reason(attached, speed_m_s)
+	if reason != "":
+		last_reject_reason = reason
 		return false
 	last_reject_reason = ""
 	return true

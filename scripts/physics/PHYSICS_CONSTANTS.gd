@@ -135,6 +135,12 @@ const CLUTCH_CAPACITY_NM: float = 3500.0
 const CLUTCH_TRAVEL_START: float = 0.20
 const CLUTCH_TRAVEL_END: float = 0.80
 
+# Gear range indices. Transmission.GearRange uses the same values; the pinned
+# constants exist so the shared no-op rule table can compare ranges without a
+# circular class dependency.
+const GEAR_RANGE_HIGH: int = 0
+const GEAR_RANGE_LOW: int = 1
+
 # Gear ratios indexed 1..10 (1..5 high range, 6..10 low range)
 const GEAR_RATIOS: Array = [
 	0.0, 4.834, 2.857, 1.840, 1.290, 1.000, 9.015, 5.324, 3.427, 2.403, 1.864
@@ -286,6 +292,7 @@ const COUPLE_DISTANCE_M: float = 0.30
 const COUPLE_MAX_ANGLE_DEG: float = 12.0
 const COUPLE_MAX_SPEED_M_S: float = 0.5
 const ALIGNING_DISTANCE_M: float = 1.5
+const REVERSE_MAX_SPEED_M_S: float = 0.5
 const UNLOCK_MAX_SPEED_M_S: float = 0.1
 const LANDING_GEAR_SPEED_M_S: float = 0.4
 const LANDING_CONTACT_HEIGHT_M: float = 0.35
@@ -305,6 +312,9 @@ const LAYER_GROUND: int = 4
 const LAYER_STRUCTURES: int = 8
 const LAYER_CONES: int = 16
 const LAYER_COUPLING: int = 32
+## Mask that every static world body must use: Godot 4 collision is mutual, so
+## a static body with mask 0 lets vehicles fall through it.
+const LAYER_VEHICLE_MASK: int = 1 | 2
 
 # ---------------------------------------------------------------------------
 # Test yard (section 7). Everything flat: the pinned surface is a single level
@@ -345,6 +355,21 @@ const DOCK_CONE_Z: Array = [34.0, 42.0]
 const CONE_HEIGHT_M: float = 0.7
 const CONE_BASE_DIAMETER_M: float = 0.36
 const CONE_COUNT: int = 12
+
+# Trailer path overlay (section 11, key G): 30 m of predicted trailer path,
+# recomputed every 0.25 s. Geometry comes from the pinned axle stations.
+const TRAILER_PATH_LENGTH_M: float = 30.0
+const TRAILER_PATH_SAMPLES: int = 15
+const TRAILER_PATH_RECOMPUTE_S: float = 0.25
+const WHEELBASE_TRACTOR_M: float = 6.50
+const FIFTH_WHEEL_TO_REAR_AXLE_M: float = 1.00
+const TRAILER_KINGPIN_TO_BOGIE_M: float = 10.00
+const OFF_TRACKING_LIMIT_M: float = 1.2
+# DEVIATION D27: the kingpin-to-bogie path shortfall the pinned dimensions
+# actually produce on the spec's 15 m circle (kingpin 15.00 m, bogie 11.18 m).
+# Measured against the steer axle path (16.32 m) the shortfall is 5.14 m.
+const OFF_TRACKING_GEOMETRIC_M_15M: float = 3.82
+const GAMEPAD_DEADZONE: float = 0.15
 const YARD_DRAW_CALL_BUDGET: int = 80
 const SUN_ELEVATION_DEG: float = 45.0
 const SUN_CLOCK_HOUR: float = 10.5

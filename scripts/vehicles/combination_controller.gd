@@ -42,6 +42,8 @@ var total_static_share_n: float = 0.0
 var physics_step_ms: float = 0.0
 var coupled: bool = true
 var scripted_input: Callable = Callable()  # scenario scripts inject inputs here
+## Per input device: keyboard 120 deg/s, gamepad 90 deg/s (section 11).
+var steer_rate_deg_s: float = PHYSICS_CONSTANTS.KEYBOARD_STEER_RATE_DEG_S
 var _prev_forward_speed: float = 0.0
 var _prev_velocity: Vector3 = Vector3.ZERO
 
@@ -265,7 +267,7 @@ func _step(dt: float) -> void:
 			1.0 - speed / PHYSICS_CONSTANTS.STEER_SPEED_FALLOFF_M_S
 		)
 	)
-	var rate: float = deg_to_rad(PHYSICS_CONSTANTS.KEYBOARD_STEER_RATE_DEG_S) * dt
+	var rate: float = deg_to_rad(steer_rate_deg_s) * dt
 	var target: float = clampf(steer_input_axis, -1.0, 1.0) * max_steer
 	steer_angle_rad = clampf(
 		steer_angle_rad + clampf(target - steer_angle_rad, -rate, rate), -max_steer, max_steer
@@ -704,14 +706,23 @@ func request_retarder(delta: int) -> void:
 	var new_stage: int = clampi(retarder_stage + delta, 0, max_stage)
 	if new_stage == retarder_stage:
 		return
-	if not transmission.retarder_allowed(new_stage, speed()):
-		GAME_STATE.flash("RETARDER NEEDS HIGH RANGE, GEAR 1-4, ABOVE 15 KM/H")
+	var reason: String = NoopRules.retarder_reason(
+		transmission.range, transmission.gear, speed(), new_stage
+	)
+	if reason != "":
+		GAME_STATE.flash(reason)
 		return
 	retarder_stage = new_stage
 
 
 func toggle_parking_brake() -> void:
 	parking_brake = not parking_brake
+
+
+func toggle_transmission_mode() -> void:
+	## V: manual <-> automatic. Manual mode is what makes the clutch matter.
+	transmission.automatic = not transmission.automatic
+	GAME_STATE.flash("TRANSMISSION %s" % ("AUTO" if transmission.automatic else "MANUAL"))
 
 
 func request_coupler_unlock() -> void:

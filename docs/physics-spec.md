@@ -165,7 +165,40 @@ file. Everything is flat: one ground slab with its top face exactly on y = 0
 - Collision layers are pinned constants: tractor 1, trailer 2, ground 4,
   structures 8, cones 16, coupling 32.
 
-## 8. Loading (loaded vs unloaded)
+## 8. Controls (section 11 of the build spec)
+
+`scripts/input/input_map_setup.gd` installs the complete pinned map from the
+`INPUT_SETUP` autoload at `_enter_tree`; `project.godot` has no `[input]` block
+(DEVIATIONS D28). `scripts/input/control_layer.gd` samples it once per physics
+tick and writes the controller's throttle, brake, clutch and steer axes, then
+consumes momentary actions once per press.
+
+- Keyboard: W throttle, S brake, Shift clutch, A/D or Left/Right steer, gear
+  keys 1..0 (actions `gear_1`..`gear_10`; 1..5 high range, 6..0 low range),
+  R reverse, N neutral, E range, Z retarder up, X retarder down, Space parking
+  brake, U coupler unlock, L landing gear, Tab camera cycle, G trailer path
+  overlay, V transmission mode, F3 debug overlay, F1 context help, Esc pause.
+- Gamepad: LT throttle, RT brake, LSx steer, LB clutch, A gear up, B gear down,
+  X range, Y parking brake, Dpad left/right retarder, Dpad up/down landing
+  gear, RS camera, RB camera cycle, Start pause. Axis deadzone 0.15.
+- Steer rate follows the device: keyboard 120 deg/s, gamepad 90 deg/s
+  (`combination_controller.steer_rate_deg_s`).
+- `scripts/input/noop_rules.gd` is the single table for the section 11 no-op
+  reasons (gear change without clutch in manual, R above 0.5 m/s, retarder in
+  low range or above gear 4 or below 15 km/h, U while moving, L while attached
+  or moving). `Transmission`, `CouplingController` and the controller all call
+  it, so a refused action always flashes the same reason through
+  `GAME_STATE.hud_flash`. NoopRules must not reference `Transmission`: the
+  circular class dependency breaks script loading in Godot 4.7, so gear range
+  comparison uses `PHYSICS_CONSTANTS.GEAR_RANGE_HIGH/LOW`.
+- Trailer path overlay (`scripts/vehicles/trailer_path.gd`): 30 m predicted
+  bogie path sampled every 2 m (15 samples), recomputed every 0.25 s. The
+  kingpin path curvature is `tan(steer) / 6.50`; the bogie sits 10.00 m behind
+  the kingpin along the trailer heading, so its radius is
+  `sqrt(R^2 + L^2 + 2 R L sin(articulation))`, and the no-scrub steady-state
+  articulation is `asin(-L / R)`.
+
+## 9. Loading (loaded vs unloaded)
 
 Cargo mass slider 0 to 29,000 kg, default 20,000 kg. Cargo CoM (trailer-local)
 (0, 1.70, +9.41) (D5: sign corrected, magnitude set so the full 29,000 kg load
@@ -176,7 +209,7 @@ recomputed as a uniform box of the combined mass (full: Iy 802,592 kg m^2, D7).
 Combined combination mass 44,400 kg. Static steer axle load: 2,777 kg empty,
 7,419 kg full (D10), both at or under the pinned 7,711 kg cap in tests.
 
-## 9. Suspension and steering
+## 10. Suspension and steering
 
 Raycast suspension per wheel: spring 55,000 N/m (steer), 65,000 N/m (drive and
 trailer), damper 3,500 N s/m, travel +/- 0.12 m. Anti-roll bars: tractor front
@@ -189,7 +222,7 @@ wheel turns from center. Targets: tractor alone curb-to-curb turning radius
 7.6 m; loaded combination off-tracking under 1.2 m on a 15 m radius circle at
 12 km/h.
 
-## 10. Collision and damage
+## 11. Collision and damage
 
 Convex decomposition collision from the GLB (`scene_import` option, max 16
 convex pieces per body), `contact_monitor = true`, `max_contacts_reported = 8`.

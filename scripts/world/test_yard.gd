@@ -37,7 +37,9 @@ func _build_ground() -> void:
 	var body := StaticBody3D.new()
 	body.name = "Ground"
 	body.collision_layer = PHYSICS_CONSTANTS.LAYER_GROUND
-	body.collision_mask = 0
+	# Godot 4 collision is mutual: a static body only collides with a vehicle
+	# that its own mask names. Ground must mask both vehicle layers.
+	body.collision_mask = (PHYSICS_CONSTANTS.LAYER_TRACTOR | PHYSICS_CONSTANTS.LAYER_TRAILER)
 	_add_box_collider(body, _yard_size(), _ground_center(_yard_size()))
 	add_child(body)
 	var mesh := MeshInstance3D.new()
@@ -89,7 +91,7 @@ func _build_warehouse_and_docks() -> void:
 	var body := StaticBody3D.new()
 	body.name = "Warehouse"
 	body.collision_layer = PHYSICS_CONSTANTS.LAYER_STRUCTURES
-	body.collision_mask = 0
+	body.collision_mask = PHYSICS_CONSTANTS.LAYER_VEHICLE_MASK
 	body.add_to_group("building")
 	var size := Vector3(
 		PHYSICS_CONSTANTS.WAREHOUSE_MAX_X - PHYSICS_CONSTANTS.WAREHOUSE_MIN_X,
@@ -201,11 +203,7 @@ func _build_cones() -> void:
 		var body := StaticBody3D.new()
 		body.name = "Cone%02d" % i
 		body.collision_layer = PHYSICS_CONSTANTS.LAYER_CONES
-		body.collision_mask = (
-			PHYSICS_CONSTANTS.LAYER_TRACTOR
-			| PHYSICS_CONSTANTS.LAYER_TRAILER
-			| PHYSICS_CONSTANTS.LAYER_GROUND
-		)
+		body.collision_mask = PHYSICS_CONSTANTS.LAYER_VEHICLE_MASK
 		body.add_to_group("cone")
 		body.position = positions[i]
 		var shape_node := CollisionShape3D.new()
@@ -338,7 +336,7 @@ func _add_wall(wall_name: String, min_corner: Vector3, max_corner: Vector3) -> v
 	var body := StaticBody3D.new()
 	body.name = wall_name
 	body.collision_layer = PHYSICS_CONSTANTS.LAYER_STRUCTURES
-	body.collision_mask = 0
+	body.collision_mask = PHYSICS_CONSTANTS.LAYER_VEHICLE_MASK
 	body.add_to_group("wall")
 	var size := max_corner - min_corner
 	_add_box_collider(body, size, _mid_of_box(min_corner, size))
