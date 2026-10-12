@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  style:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned to the same gdtoolkit the workspace contract uses, so a formatter
+      # release cannot redden main.
+      - name: Install gdtoolkit
+        run: python -m pip install --no-cache-dir gdtoolkit==4.5.0
+
+      - name: Format check
+        run: gdformat --check scripts tests
+
+      - name: Lint
+        run: gdlint scripts tests/unit tests/sim
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Godot
+        run: |
+          set -euo pipefail
+          url="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          curl -fsSL -o godot.zip "$url"
+          unzip -q godot.zip
+          bin="Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          test -x "$bin" || chmod +x "$bin"
+          echo "GODOT=${GITHUB_WORKSPACE}/${bin}" >> "$GITHUB_ENV"
+          ./"$bin" --version
+
+      # Software rasterizer only: the CPU-only rule in AGENTS.md applies here too,
+      # and a runner has no GPU anyway.
+      - name: Import project
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -euo pipefail
+          timeout 300 "$GODOT" --headless --path . --import
+
+      - name: GUT unit suite
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -euo pipefail
+          timeout 900 "$GODOT" --headless --path . \
+            -s res://addons/gut/gut_cmdln.gd \
+            -gdir=res://tests/unit \
+            -ginclude_subdirs \
+            -gexit
+
+      - name: Headless smoke
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -euo pipefail
+          timeout 300 "$GODOT" --headless --path . tests/sim/smoke_controls.tscn \
+            | tee smoke.log
+          grep -q "SMOKE OK" smoke.log
