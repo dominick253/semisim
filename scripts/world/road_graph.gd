@@ -178,7 +178,15 @@ func route_is_drivable(route: PackedStringArray) -> bool:
 
 
 static func town_profile_ids() -> PackedStringArray:
-	return WorldConstants.TOWN_PROFILES
+	var ids: PackedStringArray = PackedStringArray()
+	for profile_id: String in WorldConstants.TOWN_PROFILES:
+		ids.append(profile_id)
+	ids.sort()
+	return ids
+
+
+static func town_profile(profile_id: String) -> Dictionary:
+	return WorldConstants.TOWN_PROFILES.get(profile_id, {})
 
 
 static func build_city() -> RoadGraph:
@@ -213,28 +221,29 @@ static func build_city() -> RoadGraph:
 
 
 static func build_town(profile_id: String) -> RoadGraph:
+	var profile: Dictionary = town_profile(profile_id)
+	if profile.is_empty():
+		return null
 	var graph: RoadGraph = RoadGraph.new()
-	var cols: int = WorldConstants.TOWN_COLS
-	var rows: int = WorldConstants.TOWN_ROWS
+	var cols: int = profile["cols"]
+	var rows: int = profile["rows"]
+	var block_w: float = profile["block_w_m"]
+	var block_h: float = profile["block_h_m"]
+	var farm_approach: float = profile["farm_approach_m"]
 	for c: int in cols:
 		for r: int in rows:
-			graph.add_intersection(
-				_grid_id(c, r),
-				_grid_pos(
-					c, r, cols, rows, WorldConstants.TOWN_BLOCK_W_M, WorldConstants.TOWN_BLOCK_H_M
-				)
-			)
+			graph.add_intersection(_grid_id(c, r), _grid_pos(c, r, cols, rows, block_w, block_h))
 	for c: int in range(cols - 1):
 		for r: int in rows:
-			var kind: String = "arterial" if r == 0 or r == rows - 1 else "local"
+			var row_kind: String = "arterial" if r == 0 or r == rows - 1 else "local"
 			graph.add_street(
-				_grid_id(c, r), _grid_id(c + 1, r), TurnEnvelope.street_width_m(kind), kind
+				_grid_id(c, r), _grid_id(c + 1, r), TurnEnvelope.street_width_m(row_kind), row_kind
 			)
 	for c: int in cols:
 		for r: int in range(rows - 1):
-			var kind: String = "arterial" if c == 0 or c == cols - 1 else "local"
+			var col_kind: String = "arterial" if c == 0 or c == cols - 1 else "local"
 			graph.add_street(
-				_grid_id(c, r), _grid_id(c, r + 1), TurnEnvelope.street_width_m(kind), kind
+				_grid_id(c, r), _grid_id(c, r + 1), TurnEnvelope.street_width_m(col_kind), col_kind
 			)
 	# gdtoolkit 4.5.0, the version CI pins, cannot parse the integer division
 	# operator, so halves are computed as scaled ints.
@@ -243,14 +252,7 @@ static func build_town(profile_id: String) -> RoadGraph:
 	var hub: String = _grid_id(half_cols, half_rows)
 	var farm: String = "farm_" + profile_id
 	var anchor: String = _grid_id(cols - 1, half_rows)
-	graph.add_intersection(
-		farm,
-		Vector3(
-			(cols - 1) * 0.5 * WorldConstants.TOWN_BLOCK_W_M + WorldConstants.FARM_APPROACH_M,
-			0.0,
-			0.0
-		)
-	)
+	graph.add_intersection(farm, Vector3((cols - 1) * 0.5 * block_w + farm_approach, 0.0, 0.0))
 	graph.add_street(anchor, farm, TurnEnvelope.street_width_m("local"), "route")
 	graph.set_spawn(_grid_id(0, 0))
 	graph.mark_destination(hub)

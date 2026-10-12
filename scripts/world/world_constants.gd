@@ -40,13 +40,35 @@ const CITY_BLOCK_H_M: float = 100.0
 # present in the grid and the tight streets are the ones the challenge S5 uses.
 const ARTERIAL_EVERY_N: int = 3
 
-# Towns and farms: same graph code, different block profile.
-const TOWN_PROFILES: PackedStringArray = ["northfield", "ridgemill", "sandhollow"]
-const TOWN_COLS: int = 5
-const TOWN_ROWS: int = 4
-const TOWN_BLOCK_W_M: float = 160.0
-const TOWN_BLOCK_H_M: float = 160.0
-const FARM_APPROACH_M: float = 300.0
+# Towns and farms: same graph code, different block profile. The profiles differ
+# on purpose so the node inventory of each town is different, which is what A24
+# asserts.
+const TOWN_PROFILES: Dictionary = {
+	"northfield":
+	{
+		"cols": 5,
+		"rows": 4,
+		"block_w_m": 160.0,
+		"block_h_m": 160.0,
+		"farm_approach_m": 300.0,
+	},
+	"ridgemill":
+	{
+		"cols": 3,
+		"rows": 5,
+		"block_w_m": 140.0,
+		"block_h_m": 200.0,
+		"farm_approach_m": 420.0,
+	},
+	"sandhollow":
+	{
+		"cols": 6,
+		"rows": 3,
+		"block_w_m": 180.0,
+		"block_h_m": 150.0,
+		"farm_approach_m": 650.0,
+	},
+}
 
 # Instancing and culling policy. Props beyond this distance are not instanced
 # at all rather than swapped, because llvmpipe cost is dominated by triangles

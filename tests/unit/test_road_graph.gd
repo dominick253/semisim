@@ -105,6 +105,18 @@ func test_town_profiles_build_from_the_same_graph_code() -> void:
 			)
 
 
+func test_town_profiles_have_different_node_inventories() -> void:
+	var inventories: Dictionary = {}
+	for profile: String in RoadGraph.town_profile_ids():
+		var town: RoadGraph = RoadGraph.build_town(profile)
+		var key: String = str(town.intersection_ids().size())
+		assert_false(
+			inventories.has(key), "town %s must not repeat another node inventory" % profile
+		)
+		inventories[key] = profile
+		assert_gt(town.total_length_m(), 4000.0, "town %s must be a real road network" % profile)
+
+
 func test_alley_edges_exist_and_are_marked_as_alleys() -> void:
 	var found: int = 0
 	for id: String in _city.intersection_ids():
