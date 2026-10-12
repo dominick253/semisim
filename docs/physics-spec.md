@@ -105,8 +105,14 @@ Warning below 60 psi (HUD + audible low-air buzzer). Spring brake applies
 automatically below 40 psi: drive and trailer axles lock until pressure
 recovers above 60 psi or the engine is restarted.
 
+Brake force at the contact patch always opposes the direction the tire is
+actually travelling (DEVIATIONS D37). A fixed-direction brake force drags a
+stopped combination rearward at a steady 2 m/s^2. Below `BRAKE_HOLD_SPEED_M_S`
+(0.05 m/s) a braked combination is held at rest instead: brake force opposes
+motion, so at zero motion nothing holds the rig.
+
 Target behavior (unit-tested): full service brake plus retarder from 80 km/h
-on dry stops in 24 to 34 m.
+on dry stops in 24 to 34 m; a braked rig at rest stays at rest.
 
 ## 6. Kingpin and articulation
 
@@ -273,3 +279,59 @@ convex pieces per body), `contact_monitor = true`, `max_contacts_reported = 8`.
 Wall or building contacts above 15 kN count as a strike; 3 strikes fail the
 challenge. Cone contacts are never strikes but count in scoring. Damage is a
 counter plus HUD state in Phase 1; component damage is Phase 2.
+
+## 14. Procedural audio (section 13 of the build spec)
+
+No audio files. Every sound is synthesized per physics tick from live vehicle
+state by `scripts/audio/audio_synth.gd` (pure static math, so it is testable
+without an audio device) and pushed through one `AudioStreamGenerator` at
+`AUDIO_SAMPLE_RATE_HZ` 48000 with a `AUDIO_BUFFER_SECONDS` 0.1 buffer.
+
+Engine: `ENGINE_OSC_COUNT` 2 detuned saw oscillators at
+`ENGINE_FREQ_RPM_FACTOR` 0.5 rpm/60 Hz, summed and lowpassed at
+`ENGINE_LOWPASS_HZ` 900 Hz. Amplitude scales with rpm above idle and is gated
+by `engine_running`. Intake: a deterministic hashed noise band passed at
+`INTAKE_BANDPASS_HZ` 300 Hz at `INTAKE_LEVEL`.
+
+Tire squeal: gated on `max_lateral_slip > SQUEAL_SLIP_THRESHOLD` 0.12,
+amplitude `min(1, SQUEAL_AMPLITUDE_GAIN 8 * slip_energy)`, bandpassed at
+`SQUEAL_BANDPASS_HZ` 2500 Hz.
+
+Air events: any spring-brake engagement or disengagement triggers one
+`HISS_DURATION_S` 0.8 s burst, decaying envelope, hashed noise highpassed at
+`HISS_NOISE_FLOOR_HZ` 1200 Hz.
+
+Jackknife warning: `JACKKNIFE_BEEP_HZ` 880 Hz square at
+`JACKKNIFE_BEEP_RATE_HZ` 1/s while |articulation| exceeds
+`JACKKNIFE_BEEP_ARTICULATION_DEG` 45 deg.
+
+`AUDIO_MASTER_GAIN` 0.25 is applied once, inside the mix, so the summed sources
+stay inside the generator's -1..1 window (measured headroom: at 0.6 the full mix
+clipped 1012 samples in a one second window; at 0.25 it clips none).
+
+Evidence: `tests/sim/shot_audio.tscn` reports peak, RMS, clipped sample count,
+zero-crossing rate and a determinism hash for three windows (squeal, rolling,
+air), writes `docs/evidence/phase1/audio_waveform.png` and three 16 bit PCM WAVs
+for listening. The WAVs are evidence artifacts, not game assets.
+
+## 15. Kingpin joint implementation (Godot-Jolt specifics)
+
+`Generic6DOFJoint3D` locks 5 DOF and frees yaw (the build spec's
+`Generic6DOFSpringConstraint3D`, DEVIATIONS D17). Three engine facts drive the
+implementation:
+
+1. The trailer's origin IS its kingpin, so it is seated 1.00 m forward of the
+   tractor origin (`seat_at_rest`) to put the kingpin on the fifth wheel plate.
+   Godot captures a joint's frames when the joint enters the tree, so any code
+   that moves the combination calls `rebuild_joint()` rather than moving a body
+   under an existing joint (DEVIATIONS D34).
+2. The angular limits need a lower ceiling than the linear limits:
+   `KINGPIN_ANGULAR_LOCK_N_M` 2.0e6 N m against `KINGPIN_LOCK_TORQUE_N_M` 2.0e7 N
+   (DEVIATIONS D35).
+3. The linear limits are soft, so a residual plate error remains and is pinned as
+   `KINGPIN_MAX_PLATE_ERROR_M` 0.50 m, asserted by
+   `tests/unit/test_kingpin_geometry.gd` (DEVIATIONS D36).
+
+`Generic6DOFJoint3D` has no top-level `enabled` property: unlocking releases all
+six limits through `_set_joint_limits_active` (DEVIATIONS D38 covers the
+auto-lock velocity gate that would otherwise re-lock a stopped rig instantly).

@@ -163,6 +163,27 @@ const CAMERA_FAR_M: float = 600.0
 const CAMERA_SHAKE_SECONDS: float = 0.3
 const CAMERA_SHAKE_AMPLITUDE_M: float = 0.12
 
+# Audio (section 13). Procedural only: AudioStreamGenerator at 48 kHz, zero
+# audio files. The synthesis math is static and pure so it is testable without
+# an audio device.
+const AUDIO_SAMPLE_RATE_HZ: int = 48000
+const AUDIO_BUFFER_SECONDS: float = 0.1
+const ENGINE_OSC_COUNT: int = 2
+const ENGINE_FREQ_RPM_FACTOR: float = 0.5  # 0.5 * rpm / 60 Hz per oscillator
+const ENGINE_LOWPASS_HZ: float = 900.0
+const INTAKE_BANDPASS_HZ: float = 300.0
+const SQUEAL_BANDPASS_HZ: float = 2500.0
+const SQUEAL_SLIP_THRESHOLD: float = 0.12
+const SQUEAL_AMPLITUDE_GAIN: float = 8.0
+const HISS_DURATION_S: float = 0.8
+const JACKKNIFE_BEEP_HZ: float = 880.0
+const JACKKNIFE_BEEP_RATE_HZ: float = 1.0
+const JACKKNIFE_BEEP_ARTICULATION_DEG: float = 45.0
+# DEVIATION D39: headroom. At 0.6 the full source mix (engine + intake + squeal
+# + hiss + beep) saturates the -1..1 generator window: 1012 of 48000 samples
+# clipped in the evidence window. 0.25 clips none.
+const AUDIO_MASTER_GAIN: float = 0.25
+
 # HUD (section 12). Gauge ranges, warning thresholds and the pinned font size.
 const HUD_FONT_SIZE: int = 16
 const HUD_FONT_NAME: String = "Open Sans SemiBold"
@@ -246,6 +267,31 @@ const JACKKNIFE_WARN_DEG: float = 60.0
 # while staying far below the point where the solver starts trading stability
 # for penetration.
 const KINGPIN_LOCK_TORQUE_N_M: float = 2.0e7
+# DEVIATION D35: the same 2.0e7 ceiling applied to the ANGULAR limits makes the
+# solver inject energy. A jackknife at 20 km/h flung the tractor to 399.8 km/h
+# with the engine at idle rpm; the ceiling is the energy source (linear 2.0e7 +
+# angular 2.0e6 -> 30.8 km/h peak). Angular limits only have to resist the
+# articulation and pitch/roll loads, and 2.0e6 N m holds articulation inside the
+# 75 deg hard limit while exceeding the 1.7e6 N m fifth wheel moment. Linear
+# limits keep 2.0e7 N because they carry 30 tonnes of vertical load.
+const KINGPIN_ANGULAR_LOCK_N_M: float = 2.0e6
+# DEVIATION D36: Godot-Jolt implements Generic6DOFJoint3D linear limits as SOFT
+# limits. Measured: the kingpin drifts 0.44 m off the fifth wheel plate at
+# 16 km/h with 0.6 steering input, and the drift does not respond to force_limit
+# (2.0e7 N and 2.0e8 N give the same answer) or to erp, while softness = 0
+# removes load carrying through the joint entirely (tests/scratch/probe_joint.tscn).
+# Three code-side corrections were tried and all three were worse than the leak:
+# a CoM level velocity correction froze articulation (1.0 deg instead of 69 deg),
+# a constrained impulse at the pin ran the rig to 405 km/h in 40 ticks, and a
+# position-only correction grew the drift to 0.37 m against 0.22 m. The leak is
+# therefore pinned as an accepted Phase 1 limit at the tolerance below, asserted
+# by tests/unit/test_kingpin_geometry.gd, and closed in Phase 2 with a custom
+# constraint solver step rather than a patch on the joint.
+const KINGPIN_MAX_PLATE_ERROR_M: float = 0.50
+
+# DEVIATION D37: below this speed a braked combination is held at rest instead of
+# being pushed by its own brake force (see combination_controller section 8b).
+const BRAKE_HOLD_SPEED_M_S: float = 0.05
 # DEVIATION D23: the spec locks pitch and roll at exactly 0 degrees. A rigid
 # pitch lock couples the tractor and trailer suspensions into one statically
 # indeterminate system: the joint transmits a parasitic pitch moment, and the

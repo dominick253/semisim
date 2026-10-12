@@ -53,6 +53,10 @@ var _prev_velocity: Vector3 = Vector3.ZERO
 
 func _ready() -> void:
 	_build_wheels()
+	# The bodies have to be seated BEFORE the joint is created: Godot captures
+	# the joint frames from the body transforms at creation, and moving a body
+	# afterwards does not move the pivot.
+	seat_at_rest()
 	_build_joint()
 	apply_cargo(cargo_kg)
 	air.reset(PHYSICS_CONSTANTS.AIR_NOMINAL_PSI, true)
@@ -152,7 +156,7 @@ func _build_joint() -> void:
 	# pinned 7,711 kg cap. 0.15 deg reproduces the pinned static shares within
 	# 2 percent (tests/sim/probe_kingpin_window.gd).
 	var pr_rad: float = deg_to_rad(PHYSICS_CONSTANTS.KINGPIN_PITCH_ROLL_WINDOW_DEG)
-	var torque_ceiling: float = PHYSICS_CONSTANTS.KINGPIN_LOCK_TORQUE_N_M
+	var torque_ceiling: float = PHYSICS_CONSTANTS.KINGPIN_ANGULAR_LOCK_N_M
 	for axis in ["x", "z"]:
 		joint.set("angular_limit_%s/enabled" % axis, true)
 		joint.set("angular_limit_%s/lower_angle" % axis, -pr_rad)
@@ -219,13 +223,59 @@ func spawn_y_for(body: StringName) -> float:
 	return lowest_anchor - radius - max_compression
 
 
-func place_at_rest() -> void:
-	## Position both bodies at their suspension rest heights and re-seat the
-	## kingpin joint. Scenario scripts and the yard call this instead of
-	## guessing spawn heights.
+func kingpin_error_m() -> float:
+	## Distance between the trailer's kingpin point and the tractor's fifth wheel
+	## plate center. It must be zero: the joint pins the two bodies at whichever
+	## point the joint is seated at, so if the trailer is placed with its kingpin
+	## anywhere else the whole trailer pivots about the wrong point.
+	var kingpin: Vector3 = trailer.global_transform * PHYSICS_CONSTANTS.KINGPIN_TRAILER_LOCAL
+	var fifth: Vector3 = tractor.global_transform * PHYSICS_CONSTANTS.FIFTH_WHEEL_CENTER
+	return (kingpin - fifth).length()
+
+
+func seat_at_rest() -> void:
+	## Position both bodies at their suspension rest heights.
+	##
+	## DEVIATION D34: the trailer's origin IS its kingpin (section 5.1), so it has to sit on the
+	## fifth wheel plate rather than on the tractor origin. Without that offset
+	## the joint pins the trailer 1.00 m behind its own kingpin and every
+	## dimension measured from the pivot is 1 m off
+	## (tests/unit/test_kingpin_geometry.gd).
 	tractor.position = Vector3(tractor.position.x, spawn_y_for(&"Tractor"), tractor.position.z)
-	trailer.position = Vector3(trailer.position.x, spawn_y_for(&"Trailer"), trailer.position.z)
-	joint.global_position = tractor.global_transform * PHYSICS_CONSTANTS.FIFTH_WHEEL_CENTER
+	var seat: Vector3 = (
+		PHYSICS_CONSTANTS.FIFTH_WHEEL_CENTER - PHYSICS_CONSTANTS.KINGPIN_TRAILER_LOCAL
+	)
+	trailer.position = Vector3(
+		tractor.position.x + seat.x, spawn_y_for(&"Trailer"), tractor.position.z + seat.z
+	)
+
+
+func _set_joint_limits_active(active: bool) -> void:
+	## Generic6DOFJoint3D has no top-level "enabled" property in Godot 4.7:
+	## assigning joint.enabled fails at runtime with "Invalid assignment of
+	## property or key 'enabled'" and leaves the joint attached, so an unlocked
+	## trailer was still physically pinned to the tractor. Every DOF has to be
+	## released through its own limit (tests/unit/test_kingpin_geometry.gd).
+	for axis in ["x", "y", "z"]:
+		joint.set("linear_limit_%s/enabled" % axis, active)
+		joint.set("angular_limit_%s/enabled" % axis, active)
+
+
+func rebuild_joint() -> void:
+	## Godot captures a Generic6DOFJoint3D's frames from the body transforms when
+	## the joint enters the tree, so re-seating a body needs a fresh joint. Any
+	## code that moves the combination (place_at_rest, auto coupling) calls this.
+	if joint != null and joint.is_inside_tree():
+		_set_joint_limits_active(false)
+		remove_child(joint)
+		joint.queue_free()
+	_build_joint()
+
+
+func place_at_rest() -> void:
+	## Scenario scripts and the yard call this instead of guessing spawn heights.
+	seat_at_rest()
+	rebuild_joint()
 
 
 func _refresh_static_shares() -> void:
@@ -322,7 +372,7 @@ func _step(dt: float) -> void:
 		tractor.apply_torque(Vector3(0.0, -t_total, 0.0))
 		trailer.apply_torque(Vector3(0.0, t_total, 0.0))
 
-	# 7b. Coast-down drag and rolling resistance (DEVIATIONS D16), split by mass.
+		# 7b. Coast-down drag and rolling resistance (DEVIATIONS D16), split by mass.
 	_apply_coast_forces()
 
 	# 8. Jackknife and rollover rules.
@@ -335,7 +385,28 @@ func _step(dt: float) -> void:
 	if absf(_lateral_accel_g()) > PHYSICS_CONSTANTS.ROLLOVER_LATERAL_G:
 		rollover_flag = true
 
+	# 8b. Static brake hold: a braked combination that has stopped stays stopped.
+	# Brake force opposes motion, so at zero motion nothing holds the rig, and a
+	# parked truck would creep off the brake. The hold releases as soon as real
+	# motion appears (a shove, a slope, a jackknife).
+	if _brakes_applied() and speed <= PHYSICS_CONSTANTS.BRAKE_HOLD_SPEED_M_S:
+		tractor.linear_velocity = Vector3.ZERO
+		tractor.angular_velocity = Vector3.ZERO
+		trailer.linear_velocity = Vector3.ZERO
+		trailer.angular_velocity = Vector3.ZERO
+
 	_update_vehicle_state(speed)
+
+
+func _point_velocity(body: RigidBody3D, global_point: Vector3) -> Vector3:
+	## Godot 4.7 RigidBody3D has no get_velocity_at_point, so the rigid body
+	## velocity at an offset is computed directly.
+	## The lever arm has to be measured from the body's actual center of mass:
+	## both bodies run with CENTER_OF_MASS_MODE_CUSTOM, so global_position is the
+	## scene origin, not the CoM.
+	return (
+		body.linear_velocity + body.angular_velocity.cross(global_point - body.get_center_of_mass())
+	)
 
 
 func _step_wheel(
@@ -399,33 +470,54 @@ func _step_wheel(
 	v_contact.y = 0.0
 	var heading: Vector3 = -body.global_basis.z  # Godot forward
 	var right: Vector3 = body.global_basis.x
+	# The slip angle is the angle between the wheel's own heading and its velocity
+	# at the contact patch, so the steered axes have to be rotated by the steer
+	# angle first. Measuring lateral velocity against the body axes instead makes a
+	# steered wheel on a straight-running tractor read zero slip and the combination
+	# never turns (found while building the audio evidence pass, which needs a real
+	# slide to open the squeal gate).
+	var wheel_heading: Vector3 = heading
+	var wheel_right: Vector3 = right
 	if w.role == "steer":
-		heading = heading.rotated(Vector3.UP, steer_angle_rad)
+		wheel_heading = heading.rotated(Vector3.UP, steer_angle_rad)
+		wheel_right = right.rotated(Vector3.UP, steer_angle_rad)
 	var v_forward: float = v_contact.dot(heading)
-	var v_lateral: float = v_contact.dot(right)
-	var speed_ref: float = maxf(absf(v_forward), 1.0)
-	w.slip_angle_rad = atan2(v_lateral, speed_ref)
+	var v_forward_wheel: float = v_contact.dot(wheel_heading)
+	var v_lateral_wheel: float = v_contact.dot(wheel_right)
+	var speed_ref: float = maxf(absf(v_forward_wheel), 1.0)
+	w.slip_angle_rad = atan2(v_lateral_wheel, speed_ref)
 
 	# Longitudinal slip ratio.
 	var surface_speed: float = 0.0
 	if w.role == "drive":
 		surface_speed = wheel_omega_rad_s * radius
 	else:
-		surface_speed = v_forward  # free rolling
-	w.slip_ratio = (surface_speed - v_forward) / speed_ref
+		surface_speed = v_forward_wheel  # free rolling
+	w.slip_ratio = (surface_speed - v_forward_wheel) / speed_ref
 
 	var mu: float = w.mu()
 	var adhesion: float = mu * fz
 
 	# Longitudinal demand: drive torque and brake torque at the contact patch.
 	# Each demand is capped by the friction ellipse below like any other force.
+	## DEVIATION D37: a brake force at the contact patch always opposes the direction the tire is
+	## actually travelling. Applied in a fixed direction it drags a stopped
+	## combination rearward at a steady 2 m/s^2 with the pedal pinned and no
+	## throttle: 21 km/h in 3 seconds (tests/scratch/probe_brake.tscn).
+	var motion: float = (
+		signf(v_forward_wheel)
+		if absf(v_forward_wheel) > PHYSICS_CONSTANTS.BRAKE_HOLD_SPEED_M_S
+		else 0.0
+	)
 	var demand_n: float = 0.0
 	if w.role == "drive":
-		demand_n = (drive_torque_nm * 0.5 - float(brake_torques.get("drive", 0.0))) / radius
+		demand_n = (
+			(drive_torque_nm * 0.5 - float(brake_torques.get("drive", 0.0)) * motion) / radius
+		)
 	elif w.role == "steer":
-		demand_n = -float(brake_torques.get("front", 0.0)) / radius
+		demand_n = -float(brake_torques.get("front", 0.0)) * motion / radius
 	elif w.role == "bogie":
-		demand_n = -float(brake_torques.get("bogie", 0.0)) / radius
+		demand_n = -float(brake_torques.get("bogie", 0.0)) * motion / radius
 
 	# Retarder (DEVIATIONS D20): a driveline braking force that reaches the
 	# ground through the combination braking system, so it is distributed over
@@ -465,7 +557,9 @@ func _step_wheel(
 		max_slip_energy = lateral_slip_ratio * absf(v_forward)
 
 	# Apply at the contact point (position offsets are global, per RigidBody3D docs).
-	var apply_vec: Vector3 = heading * delivered_n + right * fy
+	## The tire force lives in the wheel plane: longitudinal along the wheel
+	## heading, lateral along the wheel right axis.
+	var apply_vec: Vector3 = wheel_heading * delivered_n + wheel_right * fy
 	body.apply_force(apply_vec, _offset_from_origin(body, w.contact_global))
 
 	# Quasi-static drive axle angular state for the next tick.
@@ -570,6 +664,10 @@ func _clutch_engagement() -> float:
 		1.0
 	)
 	return t * t * (3.0 - 2.0 * t)
+
+
+func _brakes_applied() -> bool:
+	return brake_pedal > 0.0 or parking_brake or air.spring_brake_engaged
 
 
 func _brake_wheel_torques() -> Dictionary:
@@ -733,7 +831,7 @@ func request_coupler_unlock() -> void:
 		GAME_STATE.flash(coupling.last_reject_reason)
 		return
 	coupled = false
-	joint.enabled = false
+	_set_joint_limits_active(false)
 	GAME_STATE.set_coupling_state(GAME_STATE.CouplingState.DETACHED)
 	coupling_unlocked.emit()
 	print("COUPLING: UNLOCKED")
@@ -755,10 +853,16 @@ func try_auto_coupling() -> void:
 	if coupling.aligning(dist):
 		if GAME_STATE.coupling_state == GAME_STATE.CouplingState.DETACHED:
 			GAME_STATE.set_coupling_state(GAME_STATE.CouplingState.ALIGNING)
-		if coupling.can_auto_lock(dist, articulation_deg(), speed()):
+		## DEVIATION D38: section 11 gates auto-lock on the kingpin's RELATIVE velocity, not on
+		## how fast the tractor happens to be going. Using the tractor's speed
+		## re-locks a stopped tractor the instant after unlock, and would lock a
+		## trailer rolling past it at speed (tests/unit/test_kingpin_geometry.gd).
+		var rel_speed: float = (trailer.linear_velocity - tractor.linear_velocity).length()
+		if coupling.can_auto_lock(dist, articulation_deg(), rel_speed):
 			coupled = true
-			joint.enabled = true
-			joint.global_position = fifth_global
+			## Rebuilt rather than re-enabled: the frames must be captured at the
+			## pose the kingpin actually locked at.
+			rebuild_joint()
 			GAME_STATE.set_coupling_state(GAME_STATE.CouplingState.LOCKED)
 			coupling_locked.emit()
 			print("COUPLING: LOCKED (CONFIRMED)")
