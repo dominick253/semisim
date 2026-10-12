@@ -1,0 +1,126 @@
+# Asset AS2 evidence: models/trailer.glb and models/trailer_lod1.glb
+
+Date: 2026-10-12
+Built by: tools/blender/build_trailer.py (Blender 4.5.1, headless)
+Measured by: scripts/tools/model_report.gd and tests/scratch/trailer_probe.gd
+(Godot 4.7.2 headless)
+Status: parent verified.
+
+Commands (run from /home/dom/dev/games/semisim):
+
+  blender --background --python tools/blender/build_trailer.py
+  godot-headless --path /home/dom/dev/games/semisim --import
+  godot-headless --path /home/dom/dev/games/semisim -s res://scripts/tools/model_report.gd -- --model res://models/trailer.glb
+  godot-headless --path /home/dom/dev/games/semisim -s res://scripts/tools/model_report.gd -- --model res://models/trailer_lod1.glb
+  godot-headless --path /home/dom/dev/games/semisim -s res://tests/scratch/trailer_probe.gd
+  godot-headless --path /home/dom/dev/games/semisim -s res://addons/gut/gut_cmdln.gd -gdir=res://tests/unit -ginclude_subdirs -gexit
+
+## Build output
+
+  EXPORT OK /home/dom/dev/games/semisim/models/trailer.glb      bytes= 43896  scene_tris= 680
+  EXPORT OK /home/dom/dev/games/semisim/models/trailer_lod1.glb bytes= 25700  scene_tris= 264
+
+`godot-headless --path . --import` after the build: zero ERROR lines, zero
+WARNING lines.
+
+## model_report.gd, LOD0 (res://models/trailer.glb)
+
+  MODEL res://models/trailer.glb
+  NODE_COUNT 12
+  NODE_NAMES trailer, Trailer, TrailerWheelRR, TrailerWheelRL, TrailerWheelFR,
+  TrailerWheelFL, TrailerKingpin, trailer_ref, LandingGear, landing_contact,
+  kingpin, CargoBox
+  MESHES 7
+  TOTAL_TRIS 680
+  PIVOT_EMPTIES_FOUND 3 of 9
+  PIVOT_EMPTIES trailer_ref, landing_contact, kingpin
+  MODEL REPORT OK
+
+NODE_COUNT is 12 rather than 11 because Godot wraps the GLB root in a Node3D
+named after the file (`trailer`); the GLB itself holds 11 nodes (root `Trailer`
+plus 7 meshes and 3 pivot empties). The tractor file carries the same wrapper
+(NODE_COUNT 28 for 27 GLB nodes), so this is importer behavior, not a defect.
+
+## model_report.gd, LOD1 (res://models/trailer_lod1.glb)
+
+  MODEL res://models/trailer_lod1.glb
+  NODE_COUNT 12
+  MESHES 7
+  TOTAL_TRIS 264
+  PIVOT_EMPTIES_FOUND 3 of 9
+  PIVOT_EMPTIES trailer_ref, landing_contact, kingpin
+
+3 of 9 is the correct trailer result. The other six entries in the report list
+(wheel_steer_L, wheel_steer_R, wheel_drive_L, wheel_drive_R, fifth_plate,
+cab_eye) are tractor pivots and belong to models/tractor.glb.
+
+## Triangle agreement, Blender against Godot
+
+  LOD0: Blender 680 == Godot 680
+  LOD1: Blender 264 == Godot 264
+  LOD0 680 is under the 35000 cap, LOD1 264 is under the 18000 cap.
+
+## Anchor coordinates measured inside Godot
+
+  PIVOT kingpin          class=Node3D pos=(0.000, 1.300, 0.000)
+  PIVOT landing_contact  class=Node3D pos=(0.000, 0.350, -1.200)
+  PIVOT trailer_ref      class=Node3D pos=(0.000, 1.600, 6.000)
+  PIVOTS_FOUND 3 of 3
+  WHEEL TrailerWheelFL center=(-1.050, 0.563, 9.600) radius_y=0.563
+  WHEEL TrailerWheelFR center=(1.050, 0.563, 9.600) radius_y=0.563
+  WHEEL TrailerWheelRL center=(-1.050, 0.563, 10.400) radius_y=0.563
+  WHEEL TrailerWheelRR center=(1.050, 0.563, 10.400) radius_y=0.563
+  VEHICLE_WHEEL3D_NODES 0
+  BOUNDS_MIN (-1.295, 0.000, -2.400)
+  BOUNDS_MAX (1.295, 4.070, 13.750)
+  UPRIGHT_CHECK min_y_near_0=true
+  UPRIGHT_CHECK max_y_near_407=true
+
+Reading: every anchor lands on its pinned coordinate. kingpin at (0, 1.30, 0.0)
+is KINGPIN_TRAILER_LOCAL and, with the trailer origin placed 1.00 m forward of
+the tractor origin (D34), the coupling point the coupling controller measures.
+trailer_ref at (0, 1.60, 6.00) is TRAILER_REF_LOCAL. landing_contact at
+(0, 0.35, -1.20): y is the pinned stroke (LANDING_CONTACT_HEIGHT_M), x and z
+are this slice's decision, recorded as D46. The model is upright: world bounds
+span y 0.000 to 4.070, x plus and minus 1.295, z -2.400 to 13.750, which is
+exactly the 53 ft box envelope (2.59 x 4.07 x 16.15 centered at (0, 2.035,
+5.675)). No VehicleWheel3D node exists in the imported trailer, so the four
+TrailerWheel nodes import as plain MeshInstance3D, which is what the raycast
+suspension wheel design requires.
+
+The four wheel meshes were measured as world AABB centers (parent re-run, a
+check the build pass did not make): each sits at x plus or minus 1.050, which
+is TRACK_HALF_TRAILER_M, on the pinned bogie axles z 9.600 and 10.400, at y
+0.563 with a measured vertical radius of 0.563. The model wheels are therefore
+coaxial with the physics wheels rather than merely near them.
+
+## Required node names
+
+Present in the GLB: `Trailer`, `CargoBox`, `TrailerWheelFL`, `TrailerWheelFR`,
+`TrailerWheelRL`, `TrailerWheelRR`, `TrailerKingpin`, `LandingGear`, plus the
+pivot empties `kingpin`, `landing_contact`, `trailer_ref`. No node or pivot
+name ends in `wheel` (D44), and the export went through
+cityhaul_blender.export_glb with export_yup=False (D45).
+
+## Decision recorded in this slice
+
+D46: the spec pins the landing gear stroke height (0.35 m) but never its x and
+z. landing_contact sits at (0, 0.35, -1.20): 1.20 m behind the kingpin plate
+is the standard 53 ft van landing gear position and it sits inside the box
+footprint (z -2.40..+13.75). The LandingGear mesh is built on this point,
+legs bottoming at y 0.35.
+
+## Materials
+
+No third-party texture was fetched in this slice, so the model ships plain PBR
+metallic and roughness materials: white van box, dark tires, bare aluminum
+kingpin plate and landing gear, steel kingpin pin. Nothing licensed is used,
+so `docs/ATTRIBUTION.md` gains no entry from this slice.
+
+## Unit suite (regression guard)
+
+  Tests           171
+  Passing Tests   171
+  Asserts         5073
+
+Matches the AS1 baseline (171 tests, 5073 asserts); nothing fails.
