@@ -40,6 +40,8 @@ Project: CITYHAUL, a technical semi truck simulator in Godot 4.7.2 + Blender
 | `models/` | Exported `.glb` assets (travel with builds) |
 | `materials/`, `ui/`, `audio/` | Materials, UI art, procedural audio scripts |
 | `tests/unit/`, `tests/sim/` | GUT unit tests and headless scenario scripts |
+| `scripts/tools/` | Headless evidence tools (model inventory and triangle reports) |
+| `tools/blender/` | Blender build scripts, run `blender --background --python`, CPU only |
 | `docs/` | Architecture, physics spec, asset pipeline, controls, roadmap, attribution, deviations, evidence |
 
 Physics constants single source of truth: `scripts/physics/PHYSICS_CONSTANTS.gd`.
