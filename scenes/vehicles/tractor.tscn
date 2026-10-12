@@ -1,0 +1,96 @@
+[gd_scene load_steps=14 format=3]
+
+[ext_resource type="Script" path="res://scripts/vehicles/tractor_body.gd" id="1_tractor"]
+
+[sub_resource type="StandardMaterial3D" id="MatBody"]
+albedo_color = Color(0.72, 0.11, 0.09, 1)
+
+[sub_resource type="StandardMaterial3D" id="MatDark"]
+albedo_color = Color(0.12, 0.12, 0.13, 1)
+
+[sub_resource type="BoxShape3D" id="ShapeTractor"]
+size = Vector3(2.5, 3.3, 7.75)
+
+[sub_resource type="CylinderMesh" id="MeshTireSteer"]
+top_radius = 0.554
+bottom_radius = 0.554
+height = 0.295
+
+[sub_resource type="CylinderMesh" id="MeshTireDrive"]
+top_radius = 0.563
+bottom_radius = 0.563
+height = 0.285
+
+[sub_resource type="BoxMesh" id="MeshCab"]
+size = Vector3(2.5, 2.0, 2.2)
+
+[sub_resource type="BoxMesh" id="MeshHood"]
+size = Vector3(2.4, 1.1, 2.6)
+
+[sub_resource type="BoxMesh" id="MeshChassis"]
+size = Vector3(2.3, 0.4, 10.3)
+
+[sub_resource type="BoxMesh" id="MeshFifth"]
+size = Vector3(2.2, 0.2, 2.4)
+
+[node name="Tractor" type="RigidBody3D"]
+collision_layer = 1
+collision_mask = 58
+can_sleep = false
+script = ExtResource("1_tractor")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+position = Vector3(0, 2.30, -3.875)
+shape = SubResource("ShapeTractor")
+
+[node name="BodyVisual" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.65, 2.25)
+mesh = SubResource("MeshChassis")
+surface_material_override/0 = SubResource("MatDark")
+
+[node name="CabVisual" type="MeshInstance3D" parent="."]
+position = Vector3(0, 2.55, -3.9)
+mesh = SubResource("MeshCab")
+surface_material_override/0 = SubResource("MatBody")
+
+[node name="HoodVisual" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.75, -5.6)
+mesh = SubResource("MeshHood")
+surface_material_override/0 = SubResource("MatBody")
+
+[node name="FifthWheelVisual" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.42, -1.0)
+mesh = SubResource("MeshFifth")
+surface_material_override/0 = SubResource("MatDark")
+
+[node name="WheelSteerL" type="Node3D" parent="."]
+position = Vector3(1.1, 0.554, -6.5)
+
+[node name="Mesh" type="MeshInstance3D" parent="WheelSteerL"]
+rotation = Vector3(1.5707963, 0, 0)
+mesh = SubResource("MeshTireSteer")
+surface_material_override/0 = SubResource("MatDark")
+
+[node name="WheelSteerR" type="Node3D" parent="."]
+position = Vector3(-1.1, 0.554, -6.5)
+
+[node name="Mesh" type="MeshInstance3D" parent="WheelSteerR"]
+rotation = Vector3(1.5707963, 0, 0)
+mesh = SubResource("MeshTireSteer")
+surface_material_override/0 = SubResource("MatDark")
+
+[node name="WheelDriveL" type="Node3D" parent="."]
+position = Vector3(1.1, 0.563, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="WheelDriveL"]
+rotation = Vector3(1.5707963, 0, 0)
+mesh = SubResource("MeshTireDrive")
+surface_material_override/0 = SubResource("MatDark")
+
+[node name="WheelDriveR" type="Node3D" parent="."]
+position = Vector3(-1.1, 0.563, 0)
+
+[node name="Mesh" type="MeshInstance3D" parent="WheelDriveR"]
+rotation = Vector3(1.5707963, 0, 0)
+mesh = SubResource("MeshTireDrive")
+surface_material_override/0 = SubResource("MatDark")

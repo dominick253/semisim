@@ -39,7 +39,10 @@ static func is_jackknife(theta_deg: float, theta_rate_deg_s: float) -> bool:
 	var r: float = absf(theta_rate_deg_s)
 	if a > PHYSICS_CONSTANTS.JACKKNIFE_ANGLE_DEG:
 		return true
-	return a > PHYSICS_CONSTANTS.JACKKNIFE_RATE_ANGLE_DEG and r > PHYSICS_CONSTANTS.JACKKNIFE_RATE_DEG_S
+	return (
+		a > PHYSICS_CONSTANTS.JACKKNIFE_RATE_ANGLE_DEG
+		and r > PHYSICS_CONSTANTS.JACKKNIFE_RATE_DEG_S
+	)
 
 
 static func clamp_angle(theta_rad: float) -> float:

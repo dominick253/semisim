@@ -121,7 +121,51 @@ on dry stops in 24 to 34 m.
 - Trailer pushover is not a special case; it must emerge from the hinge plus
   brake torques.
 
-## 7. Loading (loaded vs unloaded)
+Implementation (DEVIATIONS D17, D22, D23): the joint is a
+`Generic6DOFJoint3D` at the fifth wheel / kingpin coincidence with all three
+linear DOF locked to 0.0 m. The angular limits need an explicit reaction-torque
+ceiling of `KINGPIN_LOCK_TORQUE_N_M` (2.0e7 N m) because Godot-Jolt defaults
+`force_limit` to 0.0, which makes the angular constraint apply no torque at all
+and drops the trailer. Pitch and roll get a `KINGPIN_PITCH_ROLL_WINDOW_DEG`
+(0.15 deg) window instead of a rigid 0 deg lock: a rigid lock couples both
+suspensions into a statically indeterminate system and puts the live steer axle
+over the pinned legal cap. Yaw is bounded at the +/- 75 deg hard limit and the
+articulation spring, damping and friction torques above are applied by code each
+tick, exactly as specified. The limit properties `softness`, `restitution`,
+`damping` and `erp` are never written: the Jolt backend does not support them
+and writing them silently disables load carrying through the joint.
+
+## 7. Test yard (section 7 of the build spec)
+
+Built at runtime from `PHYSICS_CONSTANTS` by `scripts/world/test_yard.gd`
+(`scenes/world/test_yard.tscn`), so no coordinate lives in a hand-authored scene
+file. Everything is flat: one ground slab with its top face exactly on y = 0
+(DEVIATIONS D24).
+
+- Yard 140 x 90 m (x -70..70, z -45..45). Wall bodies sit OUTSIDE the bounds so
+  every inner face lands exactly on a pinned boundary coordinate and the
+  drivable area is the full 140 x 90. Walls 3.0 m tall, 0.4 m thick.
+- Warehouse shell x -20..70, z 45..60, 12.0 m tall (4 stories x 3.0 m). Five
+  dock slots centered on x -10, 0, 10, 20, 30, each 4.0 m wide, bumper faces on
+  z = 44.8.
+- Alley: inner faces x = -40.0 and x = -32.0 (8.0 m corridor), z -15..45, open
+  gate at both ends. The north boundary wall is broken open at the alley mouth.
+- Staging pad 22 x 14 m centered at (0, 0, -30).
+- 12 cones at the pinned meters: 8 serpentine at x -50, -35, -20, -5, 10, 25,
+  40, 55 with z alternating +2 / -2, plus 4 dock cones at x 28 / 32, z 34 / 42.
+  Rendered as one `MultiMeshInstance3D` (12 instances, 0.7 m tall, 0.36 m base)
+  with 12 thin collision pillars on the cone layer so contact counting is exact.
+- Spawns: free drive (-55, 0, -35) heading 15 deg; dock (0, 0, -30) heading
+  180 deg; alley (-36, 0, -22) heading 0 deg; serpentine (-60, 0, 0) heading
+  0 deg. Heading is `rotation.y` in degrees: 0 faces -Z.
+- Lighting: one `DirectionalLight3D` at 45 deg elevation with 2048 shadow map
+  (`rendering/lights_and_shadows/directional_shadow/size`) and a 120 m shadow
+  fade, procedural sky. 15 static meshes in the yard, well under the 80 draw
+  call budget.
+- Collision layers are pinned constants: tractor 1, trailer 2, ground 4,
+  structures 8, cones 16, coupling 32.
+
+## 8. Loading (loaded vs unloaded)
 
 Cargo mass slider 0 to 29,000 kg, default 20,000 kg. Cargo CoM (trailer-local)
 (0, 1.70, +9.41) (D5: sign corrected, magnitude set so the full 29,000 kg load
@@ -132,7 +176,7 @@ recomputed as a uniform box of the combined mass (full: Iy 802,592 kg m^2, D7).
 Combined combination mass 44,400 kg. Static steer axle load: 2,777 kg empty,
 7,419 kg full (D10), both at or under the pinned 7,711 kg cap in tests.
 
-## 8. Suspension and steering
+## 9. Suspension and steering
 
 Raycast suspension per wheel: spring 55,000 N/m (steer), 65,000 N/m (drive and
 trailer), damper 3,500 N s/m, travel +/- 0.12 m. Anti-roll bars: tractor front
@@ -145,7 +189,7 @@ wheel turns from center. Targets: tractor alone curb-to-curb turning radius
 7.6 m; loaded combination off-tracking under 1.2 m on a 15 m radius circle at
 12 km/h.
 
-## 9. Collision and damage
+## 10. Collision and damage
 
 Convex decomposition collision from the GLB (`scene_import` option, max 16
 convex pieces per body), `contact_monitor = true`, `max_contacts_reported = 8`.

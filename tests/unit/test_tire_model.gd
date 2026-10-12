@@ -51,7 +51,8 @@ func test_t5_gear_torque() -> void:
 	var engine_nm: float = 2230.0
 	var gear_ratio: float = 9.015
 	var wheel_torque_nm: float = TireModel.wheel_traction_torque(
-		engine_nm, gear_ratio,
+		engine_nm,
+		gear_ratio,
 		PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO,
 		PHYSICS_CONSTANTS.DRIVELINE_EFFICIENCY
 	)

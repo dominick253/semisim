@@ -1,5 +1,6 @@
 class_name LoadMath
 ## Trailer loading and static axle load math (spec section 5.6). Pure math.
+## Geometry comes from PHYSICS_CONSTANTS (deviations D1..D5 applied).
 
 
 static func trailer_mass_loaded(cargo_kg: float) -> float:
@@ -11,9 +12,8 @@ static func combined_mass(cargo_kg: float) -> float:
 
 
 static func trailer_com_loaded(cargo_kg: float) -> Vector3:
-	## Mass-weighted CoM of empty trailer plus cargo (trailer-local frame).
-	## +z is rearward (toward the bogie); constants carry the corrected signs
-	## (see docs/DEVIATIONS.md).
+	## Mass-weighted CoM of empty trailer plus cargo (trailer-local frame,
+	## +z rearward from the kingpin).
 	var m_empty: float = PHYSICS_CONSTANTS.TRAILER_MASS_EMPTY_KG
 	var m_total: float = m_empty + cargo_kg
 	if m_total <= 0.0:
@@ -25,8 +25,8 @@ static func trailer_com_loaded(cargo_kg: float) -> Vector3:
 
 static func box_inertia(mass_kg: float, extents: Vector3) -> Vector3:
 	## Uniform solid box inertia (Ix, Iy, Iz) about its center.
-	## extents = full box dimensions (x, y, z): I = m/12 * (sum of the two
-	## squared extents perpendicular to the axis).
+	## extents = full box dimensions: I = m/12 * (sum of the two squared
+	## extents perpendicular to the axis).
 	return Vector3(
 		mass_kg / 12.0 * (extents.y * extents.y + extents.z * extents.z),
 		mass_kg / 12.0 * (extents.x * extents.x + extents.z * extents.z),
@@ -39,32 +39,46 @@ static func trailer_inertia_loaded(cargo_kg: float) -> Vector3:
 	return box_inertia(trailer_mass_loaded(cargo_kg), PHYSICS_CONSTANTS.TRAILER_BOX)
 
 
+static func bogie_mean_z() -> float:
+	return (
+		(PHYSICS_CONSTANTS.TRAILER_BOGIE_AXLE_1.z + PHYSICS_CONSTANTS.TRAILER_BOGIE_AXLE_2.z) * 0.5
+	)
+
+
 static func fifth_wheel_load_kg(cargo_kg: float) -> float:
-	## Trailer weight carried by the kingpin, from moments about the trailer
-	## bogie axle average. Distances are measured rearward from the kingpin:
-	## bogie at +12.20 m, CoM at +6.17..+7.70 m, kingpin at 0.
-	var bogie_z: float = (PHYSICS_CONSTANTS.TRAILER_BOGIE_AXLE_1.z + PHYSICS_CONSTANTS.TRAILER_BOGIE_AXLE_2.z) * 0.5
+	## Trailer weight carried by the kingpin: moments about the bogie axle
+	## mean. Kingpin at trailer-local 0, bogie at +10.00, CoM between them.
+	var bogie_z: float = bogie_mean_z()
 	var m_total: float = trailer_mass_loaded(cargo_kg)
 	var com: Vector3 = trailer_com_loaded(cargo_kg)
 	var lever_com: float = bogie_z - com.z
-	var lever_kingpin: float = bogie_z
-	return m_total * lever_com / lever_kingpin
+	return m_total * lever_com / bogie_z
 
 
 static func steer_axle_load_kg(cargo_kg: float) -> float:
-	## Static steer (front) axle load in kg, moments about the rear axle.
-	## Tractor weight share plus the fifth wheel load acting behind the rear
-	## axle at the fifth wheel z offset.
+	## Static steer (front) axle load in kg, moments about the drive axle.
+	## Tractor CoM sits ahead of the drive axle (negative z), the fifth wheel
+	## load acts at the fifth wheel z (also negative): both load the steer axle.
 	var m_tractor: float = PHYSICS_CONSTANTS.TRACTOR_MASS_KG
-	var rear_z: float = PHYSICS_CONSTANTS.TRACTOR_REAR_AXLE.z
-	var front_z: float = PHYSICS_CONSTANTS.TRACTOR_FRONT_AXLE.z
-	var wheelbase: float = rear_z - front_z  # 6.50 m
-	## Tractor moment about rear axle (CoM ahead of rear axle -> negative z).
-	var tractor_moment: float = m_tractor * (rear_z - PHYSICS_CONSTANTS.TRACTOR_COM.z)
-	## Fifth wheel load acts at fifth wheel z (behind rear axle -> negative z).
+	var wheelbase: float = (
+		PHYSICS_CONSTANTS.TRACTOR_REAR_AXLE.z - PHYSICS_CONSTANTS.TRACTOR_FRONT_AXLE.z
+	)
+	var tractor_lever: float = -PHYSICS_CONSTANTS.TRACTOR_COM.z
+	var fifth_lever: float = -PHYSICS_CONSTANTS.FIFTH_WHEEL_CENTER.z
 	var fw_kg: float = fifth_wheel_load_kg(cargo_kg)
-	var fifth_moment: float = fw_kg * (rear_z - PHYSICS_CONSTANTS.FIFTH_WHEEL_CENTER.z)
-	return (tractor_moment + fifth_moment) / wheelbase
+	return (m_tractor * tractor_lever + fw_kg * fifth_lever) / wheelbase
+
+
+static func drive_axle_load_kg(cargo_kg: float) -> float:
+	return (
+		PHYSICS_CONSTANTS.TRACTOR_MASS_KG
+		+ fifth_wheel_load_kg(cargo_kg)
+		- steer_axle_load_kg(cargo_kg)
+	)
+
+
+static func bogie_axle_load_kg(cargo_kg: float) -> float:
+	return trailer_mass_loaded(cargo_kg) - fifth_wheel_load_kg(cargo_kg)
 
 
 static func steer_axle_within_cap(load_kg: float) -> bool:

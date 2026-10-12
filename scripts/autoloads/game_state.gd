@@ -2,6 +2,11 @@ extends Node
 ## GAME_STATE autoload: vehicle, coupling, transmission and challenge state
 ## machines plus current run metrics (section 14).
 
+signal vehicle_state_changed(new_state: int)
+signal coupling_state_changed(new_state: int)
+signal challenge_state_changed(new_state: int)
+signal hud_flash(message: String)
+
 enum VehicleState { PARKED, COUPLING, DRIVING, JACKKNIFE, DESTROYED }
 enum CouplingState { DETACHED, ALIGNING, LOCKED }
 enum TransmissionState { NEUTRAL, ENGAGING, ENGAGED }
@@ -16,11 +21,6 @@ var strikes: int = 0
 var cone_contacts: int = 0
 var jackknife_events: int = 0
 var cargo_mass_kg: float = PHYSICS_CONSTANTS.CARGO_MASS_DEFAULT_KG
-
-signal vehicle_state_changed(new_state: int)
-signal coupling_state_changed(new_state: int)
-signal challenge_state_changed(new_state: int)
-signal hud_flash(message: String)
 
 
 func set_vehicle_state(new_state: int) -> void:

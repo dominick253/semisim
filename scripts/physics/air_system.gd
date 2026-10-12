@@ -22,7 +22,9 @@ func fill_rate_psi_s(rpm: float) -> float:
 
 func step(dt_s: float, rpm: float) -> void:
 	if engine_running and rpm > 0.0:
-		pressure_psi = minf(pressure_psi + fill_rate_psi_s(rpm) * dt_s, PHYSICS_CONSTANTS.AIR_NOMINAL_PSI)
+		pressure_psi = minf(
+			pressure_psi + fill_rate_psi_s(rpm) * dt_s, PHYSICS_CONSTANTS.AIR_NOMINAL_PSI
+		)
 	_refresh_state()
 
 
@@ -39,7 +41,9 @@ func _refresh_state() -> void:
 		# Spring brake releases only above 60 psi or on engine restart.
 		if pressure_psi >= PHYSICS_CONSTANTS.AIR_SPRING_BRAKE_RELEASE_PSI:
 			spring_brake_engaged = false
-			state = AirState.OK if pressure_psi >= PHYSICS_CONSTANTS.AIR_WARN_PSI else AirState.WARNING
+			state = (
+				AirState.OK if pressure_psi >= PHYSICS_CONSTANTS.AIR_WARN_PSI else AirState.WARNING
+			)
 		else:
 			state = AirState.SPRING_BRAKE
 	elif pressure_psi < PHYSICS_CONSTANTS.AIR_WARN_PSI:

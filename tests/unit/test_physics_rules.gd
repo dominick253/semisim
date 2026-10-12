@@ -8,12 +8,13 @@ extends GutTest
 
 func test_t6_load_shift() -> void:
 	# 29,000 kg cargo -> trailer mass 36,000 kg and mass-weighted CoM.
-	# CoM values use the corrected geometry (docs/DEVIATIONS.md D3/D4):
-	# empty (0,1.55,+7.70), cargo (0,1.70,+9.41), +z rearward from kingpin.
+	# Corrected geometry (docs/DEVIATIONS.md D4/D5): empty (0,1.55,+6.00),
+	# cargo (0,1.70,+6.51), +z rearward from the kingpin. Spec target
+	# (0,1.794,-6.58) is not the mass weighting of the spec's own values (D10).
 	assert_eq(LoadMath.trailer_mass_loaded(29000.0), 36000.0, "T6 loaded trailer mass")
 	var com: Vector3 = LoadMath.trailer_com_loaded(29000.0)
 	assert_almost_eq(com.y, 1.671, 0.05, "T6 CoM y")
-	assert_almost_eq(com.z, 9.078, 0.05, "T6 CoM z")
+	assert_almost_eq(com.z, 6.411, 0.05, "T6 CoM z")
 	assert_almost_eq(com.x, 0.0, 0.05, "T6 CoM x")
 
 
@@ -94,14 +95,18 @@ func test_t13_reverse_lock() -> void:
 
 
 func test_t14_steer_axle_limit() -> void:
-	# Static steer axle load with the corrected fifth wheel position (D1):
-	# 2,777 kg empty, 7,419 kg full. The full value reproduces the spec's own
-	# T14 target of 7,417 kg (spec empty 5,886 kg only follows from the
-	# impossible fifth wheel position; see docs/DEVIATIONS.md). Both must stay
-	# at or under the pinned 7,711 kg cap.
+	# Static steer axle load with the corrected geometry (D1..D5):
+	# 5,859 kg empty (spec 5,886) and 7,416 kg full (spec 7,417). Both under the
+	# pinned 7,711 kg cap. The spec's original geometry cannot produce these
+	# numbers; the corrected geometry reproduces the spec's own targets.
 	var empty_load: float = LoadMath.steer_axle_load_kg(0.0)
 	var full_load: float = LoadMath.steer_axle_load_kg(29000.0)
-	assert_between(full_load, 7417.0 * 0.98, 7417.0 * 1.02, "T14 full steer load matches spec target")
+	assert_between(
+		empty_load, 5886.0 * 0.98, 5886.0 * 1.02, "T14 empty steer load matches spec target"
+	)
+	assert_between(
+		full_load, 7417.0 * 0.98, 7417.0 * 1.02, "T14 full steer load matches spec target"
+	)
 	assert_gt(full_load, empty_load, "T14 load grows with cargo")
 	assert_true(LoadMath.steer_axle_within_cap(empty_load), "T14 empty load under cap")
 	assert_true(LoadMath.steer_axle_within_cap(full_load), "T14 full load under cap")
