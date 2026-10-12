@@ -9,13 +9,19 @@ on:
 env:
   GODOT_VERSION: 4.7.2
 
+# The runner image is pinned, not ubuntu-latest. GitHub is migrating the
+# ubuntu-latest label from Ubuntu 24.04 to Ubuntu 26.04 between 2026-10-19 and
+# 2026-11-19, and a label that changes underneath a phase gate is how a green
+# main branch turns red mid phase. ubuntu-24.04 is the image every green run in
+# this repo was measured on. Action versions are pinned to exact tags for the
+# same reason.
 jobs:
   style:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.12"
 
@@ -31,9 +37,9 @@ jobs:
         run: gdlint scripts tests/unit tests/sim
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Download Godot
         run: |
@@ -48,12 +54,20 @@ jobs:
 
       # Software rasterizer only: the CPU-only rule in AGENTS.md applies here too,
       # and a runner has no GPU anyway.
+      # The import step used to print ERROR lines and still exit 0, which is how
+      # the missing boot.tscn defect survived: a green job with errors in it.
+      # A33 requires an import step with no ERROR line, so the log is gated.
       - name: Import project
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           set -euo pipefail
-          timeout 300 "$GODOT" --headless --path . --import
+          timeout 300 "$GODOT" --headless --path . --import 2>&1 | tee import.log
+          if grep -q "^ERROR" import.log; then
+            echo "IMPORT_ERROR: the import step printed errors"
+            grep "^ERROR" import.log
+            exit 1
+          fi
 
       - name: GUT unit suite
         env:
