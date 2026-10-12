@@ -8,6 +8,9 @@ class_name ControlLayer
 ## The no-op rules themselves live in NoopRules and are enforced by the
 ## transmission and coupling controller, which emit the HUD reason flash.
 
+signal camera_cycle_requested
+signal free_camera_requested
+
 var input_state: VehicleInput = VehicleInput.new()
 var overlay_enabled: bool = false
 var debug_overlay_enabled: bool = false
@@ -101,6 +104,17 @@ func _apply_momentary() -> void:
 		overlay_enabled = not overlay_enabled
 	if Input.is_action_just_pressed("debug_overlay"):
 		debug_overlay_enabled = not debug_overlay_enabled
+	if (
+		Input.is_action_just_pressed("camera_cycle")
+		or Input.is_action_just_pressed("gamepad_camera_cycle")
+	):
+		## Section 10: Tab (and RB) cycle Chase -> Cab -> Trailer -> Free. The rig
+		## owns the mode, so the input layer only reports the press.
+		camera_cycle_requested.emit()
+	if Input.is_action_just_pressed("gamepad_camera"):
+		## Section 11 binds the right stick to "camera", not "camera cycle": it
+		## jumps straight to Free mode, where the stick orbits the rig.
+		free_camera_requested.emit()
 
 
 func _pressed_gear_action() -> String:

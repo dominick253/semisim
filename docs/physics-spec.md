@@ -217,7 +217,32 @@ SemiBold at 16 px (DEVIATIONS D30).
   so it can never overlap a gauge. Layout is asserted mechanically: 66 pairwise
   widget rect non-intersection plus enclosure in the backing panel.
 
-## 10. Loading (loaded vs unloaded)
+## 10. Cameras (section 10 of the build spec)
+
+`scripts/camera/camera_rig.gd` owns the four modes and the cycle order
+Chase -> Cab -> Trailer -> Free. `ControlLayer` emits `camera_cycle_requested`
+for `camera_cycle` (Tab) and `gamepad_camera_cycle` (RB), and
+`free_camera_requested` for `gamepad_camera` (right stick, section 11 binds RS
+to "camera", not a cycle).
+
+- Chase: 14 m behind and 5 m above the tractor reference, critically damped with
+  the pinned 0.25 s time constant (`1 - exp(-dt / 0.25)`), so camera motion never
+  aliases against the 120 Hz tick.
+- Cab: first person, camera at `CAB_EYE_LOCAL` (0.35, 1.15, -0.20). Mouse look clamped to
+  +/-30 deg yaw and -10..+20 deg pitch. Steering wheel visual rotation is
+  `steer_angle / STEER_MAX_ANGLE_DEG * STEERING_WHEEL_TURNS * 2*pi`, so full lock
+  is 2.5 turns (section 5.7).
+- Trailer: 12 m behind the trailer reference (`TRAILER_REF_LOCAL`, mid-box at the pinned trailer CoM height), same damping. Trailer local +Z is the rear, so behind means further +Z.
+- Free: fixed 20 m orbit around the tractor reference (DEVIATIONS D32 for the
+  rate). `look_at` keeps the tractor framed.
+- Mirrors: two `SubViewport` cameras at 480 x 270, `UPDATE_ALWAYS`, rendered onto
+  unshaded `PlaneMesh` quads (0.62 x 0.28 m) via `SubViewport.get_texture()`.
+  Active only in Cab mode (CPU budget); quads are hidden in every other mode.
+- Jackknife triggers 0.3 s of camera shake with a fixed-phase sine rather than
+  noise, so headless runs stay reproducible (section 15).
+- No RNG anywhere in the rig.
+
+## 11. Loading (loaded vs unloaded)
 
 Cargo mass slider 0 to 29,000 kg, default 20,000 kg. Cargo CoM (trailer-local)
 (0, 1.70, +9.41) (D5: sign corrected, magnitude set so the full 29,000 kg load
@@ -228,7 +253,7 @@ recomputed as a uniform box of the combined mass (full: Iy 802,592 kg m^2, D7).
 Combined combination mass 44,400 kg. Static steer axle load: 2,777 kg empty,
 7,419 kg full (D10), both at or under the pinned 7,711 kg cap in tests.
 
-## 11. Suspension and steering
+## 12. Suspension and steering
 
 Raycast suspension per wheel: spring 55,000 N/m (steer), 65,000 N/m (drive and
 trailer), damper 3,500 N s/m, travel +/- 0.12 m. Anti-roll bars: tractor front
@@ -241,7 +266,7 @@ wheel turns from center. Targets: tractor alone curb-to-curb turning radius
 7.6 m; loaded combination off-tracking under 1.2 m on a 15 m radius circle at
 12 km/h.
 
-## 12. Collision and damage
+## 13. Collision and damage
 
 Convex decomposition collision from the GLB (`scene_import` option, max 16
 convex pieces per body), `contact_monitor = true`, `max_contacts_reported = 8`.

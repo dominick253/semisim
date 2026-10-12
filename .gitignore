@@ -1,6 +1,9 @@
 .godot/
 *.tmp
 docs/evidence/**/*.tmp
+# Evidence PNGs are documentation, never loaded as runtime resources, so their
+# Godot import sidecars are not tracked.
+docs/evidence/**/*.import
 
 # Throwaway diagnostic probes, not part of the test suite
 tests/scratch/

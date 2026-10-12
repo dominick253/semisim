@@ -135,6 +135,34 @@ const CLUTCH_CAPACITY_NM: float = 3500.0
 const CLUTCH_TRAVEL_START: float = 0.20
 const CLUTCH_TRAVEL_END: float = 0.80
 
+# Cameras (section 10). Four modes, Tab cycles Chase -> Cab -> Trailer -> Free.
+const CHASE_ARM_LENGTH_M: float = 14.0
+const CHASE_HEIGHT_M: float = 5.0
+const CHASE_PITCH_DEG: float = -45.0
+const CHASE_DAMPING_S: float = 0.25
+const TRAILER_ARM_LENGTH_M: float = 12.0
+const CAB_EYE_LOCAL: Vector3 = Vector3(0.35, 1.15, -0.20)
+const CAB_LOOK_YAW_LIMIT_DEG: float = 30.0
+const CAB_LOOK_PITCH_MIN_DEG: float = -10.0
+const CAB_LOOK_PITCH_MAX_DEG: float = 20.0
+const FREE_ORBIT_RADIUS_M: float = 20.0
+const TRACTOR_REF_LOCAL: Vector3 = Vector3(0.0, 1.30, -4.20)
+# Trailer camera anchor: mid-box. Trailer local +Z is the rear (the bogie axles
+# sit at +9.60 / +10.40), so "behind the trailer ref" is further +Z.
+const TRAILER_REF_LOCAL: Vector3 = Vector3(0.0, 1.60, 6.00)
+const MIRROR_ANCHOR_LOCAL: Vector3 = Vector3(0.0, 2.10, -2.10)
+const MIRROR_OFFSET_M: float = 1.35
+const MIRROR_FOV_DEG: float = 60.0
+const MIRROR_QUAD_SIZE_M: Vector2 = Vector2(0.62, 0.28)
+const FREE_ORBIT_RATE_RAD_S: float = 1.4
+const MIRROR_VIEWPORT_WIDTH: int = 480
+const MIRROR_VIEWPORT_HEIGHT: int = 270
+const CAMERA_FOV_DEG: float = 70.0
+const CAMERA_NEAR_M: float = 0.15
+const CAMERA_FAR_M: float = 600.0
+const CAMERA_SHAKE_SECONDS: float = 0.3
+const CAMERA_SHAKE_AMPLITUDE_M: float = 0.12
+
 # HUD (section 12). Gauge ranges, warning thresholds and the pinned font size.
 const HUD_FONT_SIZE: int = 16
 const HUD_FONT_NAME: String = "Open Sans SemiBold"
