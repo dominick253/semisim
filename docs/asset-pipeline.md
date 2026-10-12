@@ -67,8 +67,19 @@ Trailer file nodes: `Trailer`, `CargoBox`, `TrailerWheelFL`, `TrailerWheelFR`,
 `TrailerWheelRL`, `TrailerWheelRR`, `TrailerKingpin`, `LandingGear`.
 
 Named pivot empties: `wheel_steer_L`, `wheel_steer_R`, `wheel_drive_L`,
-`wheel_drive_R`, `kingpin`, `fifth_wheel`, `landing_contact`, `cab_eye`,
+`wheel_drive_R`, `kingpin`, `fifth_plate`, `landing_contact`, `cab_eye`,
 `trailer_ref`.
+
+Two rules that the pipeline depends on and that cost a rebuild to learn (D44, D45):
+
+- No pivot or node name may end in `wheel`. Godot 4.7.2's glTF importer turns any
+  node whose name ends in `_wheel` or `-wheel` into a `VehicleWheel3D` and strips
+  the suffix, so the name is gone and a physics node appears in its place. That is
+  why the fifth-wheel anchor is `fifth_plate`.
+- `export_yup=False`. Build scripts write geometry in the Godot convention
+  directly, so Blender's glTF Y-up conversion must not run on top of it. With the
+  conversion on, an upright model lands nose down and only a coordinate probe
+  reveals it.
 
 ## Third-party assets
 

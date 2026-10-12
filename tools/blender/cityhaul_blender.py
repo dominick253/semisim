@@ -77,7 +77,15 @@ def parent_to(child, parent) -> None:
 
 
 def export_glb(filepath: str) -> str:
-	"""Export the whole scene as a GLB with modifiers applied."""
+	"""Export the whole scene as a GLB with modifiers applied.
+
+	export_yup must stay False. Build scripts place geometry directly in the
+	Godot convention (X lateral, Y up, -Z forward), which is the same handed
+	rule Godot uses. export_yup=True applies Blender's -90 deg X conversion on
+	top of that, and a model built upright lands nose down in Godot: measured
+	in Blender 4.5.1 against Godot 4.7.2, Godot position = (x, z, -y). The
+	triangle-count checks in the earlier smoke runs could not see that.
+	"""
 	directory = os.path.dirname(filepath)
 	if directory:
 		os.makedirs(directory, exist_ok=True)
@@ -86,7 +94,7 @@ def export_glb(filepath: str) -> str:
 		export_format="GLB",
 		export_apply=True,
 		use_selection=False,
-		export_yup=True,
+		export_yup=False,
 	)
 	size = os.path.getsize(filepath)
 	if size == 0:

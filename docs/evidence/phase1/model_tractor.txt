@@ -1,0 +1,121 @@
+# Asset AS1 evidence: models/tractor.glb and models/tractor_lod1.glb
+
+Date: 2026-10-12
+Built by: tools/blender/build_tractor.py (Blender 4.5.1, headless)
+Measured by: scripts/tools/model_report.gd and tests/scratch/model_probe.gd
+(Godot 4.7.2 headless)
+Status: parent verified. The first build is recorded at the bottom because the two
+defects it exposed changed the pipeline.
+
+Commands (run from /home/dom/dev/games/semisim):
+
+  blender --background --python tools/blender/build_tractor.py
+  godot-headless --path /home/dom/dev/games/semisim --import
+  godot-headless --path /home/dom/dev/games/semisim -s res://scripts/tools/model_report.gd -- --model res://models/tractor.glb
+  godot-headless --path /home/dom/dev/games/semisim -s res://scripts/tools/model_report.gd -- --model res://models/tractor_lod1.glb
+  godot-headless --path /home/dom/dev/games/semisim -s res://tests/scratch/model_probe.gd
+
+## Build output
+
+  EXPORT OK /home/dom/dev/games/semisim/models/tractor.glb      bytes= 61164  scene_tris= 868
+  EXPORT OK /home/dom/dev/games/semisim/models/tractor_lod1.glb bytes= 37424  scene_tris= 310
+
+`godot-headless --path . --import` after the build: zero ERROR lines, zero
+WARNING lines.
+
+## model_report.gd, LOD0 (res://models/tractor.glb)
+
+  MODEL res://models/tractor.glb
+  NODE_COUNT 28
+  MESHES 19
+  TOTAL_TRIS 868
+  PIVOT_EMPTIES_FOUND 7 of 9
+  PIVOT_EMPTIES wheel_steer_R, wheel_steer_L, wheel_drive_R, wheel_drive_L, kingpin, fifth_plate, cab_eye
+  MODEL REPORT OK
+
+## model_report.gd, LOD1 (res://models/tractor_lod1.glb)
+
+  NODE_COUNT 28
+  MESHES 19
+  TOTAL_TRIS 310
+  PIVOT_EMPTIES_FOUND 7 of 9
+
+7 of 9 is the correct tractor result. `landing_contact` and `trailer_ref` are
+trailer pivots and belong to models/trailer.glb, which is slice AS2.
+
+## Triangle agreement, Blender against Godot
+
+  LOD0: Blender 868 == Godot 868
+  LOD1: Blender 310 == Godot 310
+  LOD0 868 is under the 45000 cap, LOD1 310 is under the 18000 cap.
+
+## Anchor coordinates measured inside Godot
+
+  PIVOT cab_eye        class=Node3D pos=(0.000, 2.100, -4.200)
+  PIVOT fifth_plate    class=Node3D pos=(0.000, 1.300, -1.000)
+  PIVOT kingpin        class=Node3D pos=(0.000, 1.300, -1.000)
+  PIVOT wheel_drive_L  class=Node3D pos=(-1.475, 0.563, 0.000)
+  PIVOT wheel_drive_R  class=Node3D pos=(1.475, 0.563, 0.000)
+  PIVOT wheel_steer_L  class=Node3D pos=(-1.475, 0.554, -6.500)
+  PIVOT wheel_steer_R  class=Node3D pos=(1.475, 0.554, -6.500)
+  PIVOTS_FOUND 7 of 7
+  CAB class=MeshInstance3D pos=(0.000, 0.000, 0.000)
+  CAB_BOUNDS_MIN (-1.150, 0.950, -5.000) CAB_BOUNDS_MAX (1.150, 2.650, -3.300)
+  UPRIGHT_CHECK cab_center_above_drive_axle_center=true
+  VEHICLE_WHEEL3D_NODES 0
+  BOUNDS_MIN (-1.623, 0.000, -7.054)
+  BOUNDS_MAX (1.623, 3.100, 0.563)
+  UPRIGHT_CHECK height_spans_y=true
+
+Reading: every anchor lands on its pinned coordinate. cab_eye at y 2.10 z -4.20
+matches D1. kingpin and fifth_plate share (0, 1.30, -1.00), which is D2 and is the
+coupling point the coupling controller measures. Steer axle z -6.50 at radius
+0.554 and drive axle z 0.00 at radius 0.563 match physics-spec section 2. The
+model is upright: world bounds run y 0.000 to 3.100, x plus and minus 1.623 with
+mirrors, z -7.054 to 0.563, which is a 7.6 m tractor on a 6.5 m wheelbase. No
+VehicleWheel3D node exists in the imported tractor, which is what the raycast
+suspension wheel design requires. The upright check measures the Cab mesh bounds
+(y 0.950 to 2.650, z -5.000 to -3.300, so the cab sits between the steer axle at
+z -6.500 and the drive axle at z 0.000). It does not read the Cab node transform:
+that origin is at the model origin, and the first version of the probe reported
+false for a model that was already upright.
+
+## Required node names
+
+Present in the GLB source: `Tractor`, `Cab`, `Chassis`, `WheelSteerL`,
+`WheelSteerR`, `WheelDriveL`, `WheelDriveR`, `FifthWheel`, `LandingGear`.
+
+## Two defects this slice found, both fixed in the pipeline
+
+1. Export orientation. `cityhaul_blender.export_glb()` used `export_yup=True`. In
+   Blender 4.5.1 that applies a -90 deg rotation about X on export, so a model
+   built upright in the Godot convention lands nose down: Godot position =
+   (Blender.x, Blender.z, -Blender.y). The first build hid it behind a +90 deg
+   rotation on the Tractor root, and the earlier smoke run never caught it because
+   only triangle counts were measured. The helper now exports with
+   `export_yup=False` and the build script carries no compensating rotation.
+   Logged as D45.
+2. Pivot name collision. Godot 4.7.2's glTF importer converts any node whose name
+   ends in `_wheel` or `-wheel` into a `VehicleWheel3D` and strips the suffix, so
+   `fifth_wheel` imported as a physics node named `fifth` and the contract name
+   never survived. Measured name mapping from the build slice:
+   `fifth_wheel` to `fifth` (VehicleWheel3D), `fifth-wheel` to an anonymous
+   VehicleWheel3D, while `fifthwheel` and `wheel_fifth` survive as plain Node3D.
+   The pivot is renamed `fifth_plate`, and the imported model now reports zero
+   VehicleWheel3D nodes. Logged as D44.
+
+## Materials
+
+No third-party texture was fetched, so the model ships plain PBR metallic and
+roughness materials: white cab, navy hood stripe and bumper, bare aluminium
+chassis, tanks, stacks, fifth wheel plate, landing gear and mirrors, dark tyres,
+dark windshield. Nothing licensed is used, so `docs/ATTRIBUTION.md` gains no entry
+from this slice.
+
+## First build, kept for the record
+
+  EXPORT OK models/tractor.glb      bytes= 61944  scene_tris= 868
+  EXPORT OK models/tractor_lod1.glb bytes= 37516  scene_tris= 310
+  NODE_COUNT 29, MESHES 19, TOTAL_TRIS 868, PIVOT_EMPTIES_FOUND 6 of 9
+  PIVOT_EMPTIES wheel_steer_R, wheel_steer_L, wheel_drive_R, wheel_drive_L,
+  kingpin, cab_eye   (fifth_wheel missing: imported as VehicleWheel3D "fifth")

@@ -15,7 +15,7 @@ const PIVOT_EMPTIES: Array[String] = [
 	"wheel_drive_L",
 	"wheel_drive_R",
 	"kingpin",
-	"fifth_wheel",
+	"fifth_plate",
 	"landing_contact",
 	"cab_eye",
 	"trailer_ref",
