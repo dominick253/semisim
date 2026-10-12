@@ -44,8 +44,9 @@ produced through Route A and Route B stays a convenience.
    on copies.
 4. Keep every `.blend` source in `~/dev/3d/semisim/`. Export GLB into the Godot
    project `models/` so assets travel with builds.
-5. Export with `bpy.ops.export_scene.gltf`, `export_format='GLB'`, +Y up, no
-   extra node transforms.
+5. Export with `bpy.ops.export_scene.gltf`, `export_format='GLB'`,
+   `export_yup=False` (D45; the Y-up conversion must not run on top of geometry
+   that is already written in the Godot convention), no extra node transforms.
 6. After every export verify the file exists, is non-empty, and node names
    match, using `scripts/tools/model_report.gd`. The report prints `NODE_COUNT`,
    `NODE_NAMES`, `MESHES`, `TOTAL_TRIS` and `PIVOT_EMPTIES_FOUND` lines, so
