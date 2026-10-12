@@ -5,9 +5,11 @@ Used by the build scripts in this directory:
     blender --background --python tools/blender/build_tractor.py
 
 CPU only. Run Blender through the `blender` wrapper, never the binary directly.
-Coordinates follow the build spec: X is lateral, Y is up, Z is forward along the
-vehicle, which is the same handedness `docs/physics-spec.md` uses. Godot imports
-the GLB with +Y up.
+Coordinates match `docs/physics-spec.md` exactly: X is lateral, Y is up, and -Z
+is forward. The tractor front axle sits at z -6.50 and the drive axle at z 0.00,
+and the trailer bogie sits at z +9.60 and +10.40 behind its kingpin origin, so
+building +Z as the front mirrors the vehicle and breaks the physics anchors.
+Godot imports the GLB with +Y up.
 """
 
 import os
