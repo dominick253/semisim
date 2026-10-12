@@ -94,6 +94,10 @@ func street_for(from_id: String, to_id: String) -> Dictionary:
 	return _streets.get(_key(from_id, to_id), {})
 
 
+func street_count() -> int:
+	return _streets.size()
+
+
 func total_length_m() -> float:
 	var total: float = 0.0
 	for key: String in _streets:
