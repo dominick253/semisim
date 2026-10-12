@@ -16,7 +16,7 @@ guessed.
 | Phase 1 alley inner width | 8.00 m | `ALLEY_INNER_X_WEST` -40.0, `ALLEY_INNER_X_EAST` -32.0 |
 | Phase 1 alley length | 60.0 m | `ALLEY_MIN_Z` -15.0 to `ALLEY_MAX_Z` 45.0 |
 | Yard draw-call budget | 80 | Phase 1 build spec section 7 |
-| Yard FPS | pending | gate G3, 60 s drive, llvmpipe, 1280x720 |
+| Yard FPS | mean 198.00, p50 210.00, p05 160.00 | gate G3, `docs/evidence/phase1/fps_yard.txt`, 60.0 s drive, 11894 frames, llvmpipe 1280x720, 120.13 physics Hz |
 
 The geometric model and the live physics agree on the bogie radius (11.18 m
 against 11.18 m measured). The disagreement in D27 is about the reference path
@@ -129,19 +129,29 @@ Same `RoadGraph` code builds all four profiles. Only the profile data changes.
 
 ## 7. Render budget
 
-Pending gate G3. The rule is fixed now, the number is not:
+Gate G3 is measured. Baseline is `docs/evidence/phase1/fps_yard.txt`: one truck in
+the yard on llvmpipe at 1280x720 costs 5.05 ms mean, 4.76 ms p50, 6.25 ms p95 per
+frame, with 29 visible `MeshInstance3D` and 28 collision objects, while holding
+120.13 physics ticks per second.
 
-1. Measure a 60 s scripted yard drive at 1280x720 on llvmpipe and record FPS
-   plus draw calls plus triangles (`docs/evidence/phase1/fps_yard.txt`).
-2. The city budget is whatever holds the same frame time as the yard on the same
-   drive shape, never a number copied from a spec.
+1. City budget: the city drive must hold a mean frame time at or below the yard
+   p95, 6.25 ms, on the same 60 s drive shape and the same 1280x720 llvmpipe
+   context. That is the number A22 compares against, not a number copied from a
+   spec.
+2. Draw-call budget for the city: 80 total, of which the yard already spends 29,
+   so props and road slabs must fit inside 51 draw calls. That is what forces
+   `MultiMesh3D` instancing in section 6 rather than one node per prop.
 3. Floor is the Phase 1 contract floor: 30 fps at 1280x720 on llvmpipe, target
-   60 fps.
+   60 fps. The measured yard sits far above both, so the binding limit is the
+   city scene size, not the truck.
 
 ## 8. What is not decided here
 
 - Traffic agent budget: decided in M3 before agents are built, from a measured
   tick-rate test.
-- Triangle and draw-call numbers: decided after G3.
+- Triangle and draw-call numbers: draw calls are capped at 80 total with the yard
+  spending 29. The triangle count still has to be measured on the city scene,
+  because Godot 4.7 `PrimitiveMesh` exposes no surface array length and the yard
+  is built from primitive meshes.
 - Whether the city reuses Phase 1 Kenney CC0 props or vendors new CC0 props:
   decided at M1c, and whatever lands goes in `docs/ATTRIBUTION.md`.

@@ -1,0 +1,49 @@
+CITYHAUL gate G3: measured yard FPS baseline
+===========================================
+
+Run shape (fixed, so the Phase 2 city number is comparable):
+
+  xvfb-run -a --server-args="-screen 0, 1280x720x24" \
+    ~/.local/bin/godot --display-driver x11 --disable-vsync --path . \
+    res://tests/scratch/fps_probe.tscn
+
+Harness: tests/scratch/fps_probe.tscn plus tests/scratch/fps_probe.gd. It builds
+the same rig tests/sim/smoke_controls.gd builds (test yard, CombinationController
+with tractor and trailer, ControlLayer, CameraRig, HUD, AudioDirector) and drives
+it the way tests/sim/shot_cameras.gd drives: automatic transmission, throttle
+0.85 after a 240 tick settle, a steer reversal every 6 s. Scratch harness, never
+run in CI.
+
+Renderer proof line, taken from the run itself:
+
+  OpenGL API 4.5 (Core Profile) Mesa 26.0.8-1ubuntu0.3 - Compatibility -
+  Using Device: Mesa - llvmpipe (LLVM 21.1.8, 256 bits)
+
+Engine: Godot 4.7.2.stable.official.ed1daf0bf, viewport 1280x720, CPU only.
+
+Measured output:
+
+  FPS_FRAMES frames=11894 seconds=60.0 mean_fps=198.00 p50_fps=210.00 p05_fps=160.00 worst_fps=12.53
+  FRAME_MS mean=5.05 p50=4.76 p95=6.25 worst=79.78
+  TICKS physics=7208 measured_hz=120.13 target=120
+  DRIVE max_kmh=21.70 end_kmh=0.03 kingpin_err_m=0.008 articulation_deg=0.00
+  SCENE visible_mesh_instances=29 approx_triangles=0 collision_objects=28 nodes=163
+
+Reading of the numbers:
+
+- Mean frame cost for one truck in the yard on llvmpipe is 5.05 ms, p50 4.76 ms,
+  95th percentile 6.25 ms. The Phase 1 contract floor of 30 fps is 33.33 ms, so
+  the yard spends about 15 percent of the floor.
+- The worst single frame in 60 s was 79.78 ms (12.53 fps). It is one frame, at
+  start, and it is the scene and shader compile warm-up, not steady state. Any
+  later city number must be compared against mean and p95, not against this.
+- Physics held 120.13 ticks/s against a pinned 120, so rendering is not stealing
+  ticks from the simulation at this scene size.
+- max_kmh 21.70 matches the Phase 1 probe result of 21 km/h in 3 seconds.
+  end_kmh 0.03 is the combination against the yard boundary at the end of the
+  steer wiggle, not a drivetrain fault.
+- Draw-call proxy is 29 visible MeshInstance3D against the Phase 1 budget of 80.
+- approx_triangles reads 0 because Godot 4.7 PrimitiveMesh exposes no
+  surface_get_array_len, so the inventory walk cannot count generated surfaces.
+  The city triangle budget therefore has to be measured on the city scene, which
+  uses imported meshes, not inferred from this line.
