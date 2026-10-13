@@ -13,6 +13,8 @@ Corrected pinned numbers are used, per docs/DEVIATIONS.md:
   - D1 tractor CoM z = -4.20 (not the superseded -0.75)
   - D2 fifth wheel center z = -1.00 (not the superseded -7.45 / -4.55)
   - steer axle center (0, 0.554, -6.50), drive axle center (0, 0.563, 0.00)
+  - D48 wheel track half width 1.10 (TRACK_HALF_STEER_M, TRACK_HALF_DRIVE_M)
+    and every wheel node origin on its axle anchor
 
 Textures: no CC0 texture could be fetched in this slice, so the model ships
 plain PBR metallic/roughness materials (white cab, navy hood stripe, bare
@@ -24,6 +26,7 @@ import os
 import sys
 
 import bpy
+from mathutils import Matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cityhaul_blender as cb  # noqa: E402  (helper lives next to this script)
@@ -44,7 +47,11 @@ STEER_W = 0.295
 DRIVE_Z = 0.00
 DRIVE_R = 0.563
 DRIVE_W = 0.285
-WHEEL_X = 1.475
+# D48: the wheel track half width is pinned by TRACK_HALF_STEER_M and
+# TRACK_HALF_DRIVE_M in scripts/physics/PHYSICS_CONSTANTS.gd (both 1.10). The
+# first build modelled the tyres at x 1.475, 0.375 m outboard of the plane
+# where the physics wheels push.
+WHEEL_X = 1.10
 
 # Tractor CoM (D1). Used only to sanity-check cab placement; the physics CoM is
 # a separate constant in PHYSICS_CONSTANTS.gd, not baked into the mesh.
@@ -68,6 +75,23 @@ def make_material(name, color, metallic, roughness):
 def set_material(obj, mat):
     obj.data.materials.clear()
     obj.data.materials.append(mat)
+
+
+def axle_wheel(name, radius, width, anchor, axis="X"):
+    """Tyre cylinder whose node origin is the axle anchor, D48.
+
+    cb.cylinder's transform_apply call bakes the object's location into the
+    vertex data (Blender's transform_apply defaults location to True), so the
+    returned object sits at the model origin with world-space vertices and the
+    exported GLB node carries no translation. A wheel node whose origin is the
+    model origin swings the tyre around the chassis when rotated. Shifting the
+    mesh data by -anchor and putting the object location at anchor centres the
+    tyre on the node origin and leaves the world position untouched.
+    """
+    obj = cb.cylinder(name, radius, width, anchor, axis=axis)
+    obj.data.transform(Matrix.Translation((-anchor[0], -anchor[1], -anchor[2])))
+    obj.location = anchor
+    return obj
 
 
 def apply_all(obj):
@@ -126,15 +150,16 @@ def build_tractor():
     set_material(landing, alum)
 
     # Wheels. Cylinder axis along X (the axle direction). Center y = radius so
-    # the tire bottom rests on the ground plane y = 0.
-    steer_l = cb.cylinder("WheelSteerL", STEER_R, STEER_W,
-                          (-WHEEL_X, STEER_R, STEER_Z), axis="X")
-    steer_r = cb.cylinder("WheelSteerR", STEER_R, STEER_W,
-                          (WHEEL_X, STEER_R, STEER_Z), axis="X")
-    drive_l = cb.cylinder("WheelDriveL", DRIVE_R, DRIVE_W,
-                          (-WHEEL_X, DRIVE_R, DRIVE_Z), axis="X")
-    drive_r = cb.cylinder("WheelDriveR", DRIVE_R, DRIVE_W,
-                          (WHEEL_X, DRIVE_R, DRIVE_Z), axis="X")
+    # the tire bottom rests on the ground plane y = 0. Each node origin is its
+    # axle anchor (D48) so the wheel can be rotated about the axle.
+    steer_l = axle_wheel("WheelSteerL", STEER_R, STEER_W,
+                         (-WHEEL_X, STEER_R, STEER_Z), axis="X")
+    steer_r = axle_wheel("WheelSteerR", STEER_R, STEER_W,
+                         (WHEEL_X, STEER_R, STEER_Z), axis="X")
+    drive_l = axle_wheel("WheelDriveL", DRIVE_R, DRIVE_W,
+                         (-WHEEL_X, DRIVE_R, DRIVE_Z), axis="X")
+    drive_r = axle_wheel("WheelDriveR", DRIVE_R, DRIVE_W,
+                         (WHEEL_X, DRIVE_R, DRIVE_Z), axis="X")
     for w in (steer_l, steer_r, drive_l, drive_r):
         set_material(w, tire)
 

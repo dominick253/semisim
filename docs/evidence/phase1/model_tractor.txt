@@ -2,8 +2,8 @@
 
 Date: 2026-10-12
 Built by: tools/blender/build_tractor.py (Blender 4.5.1, headless)
-Measured by: scripts/tools/model_report.gd and tests/scratch/model_probe.gd
-(Godot 4.7.2 headless)
+Measured by: scripts/tools/model_report.gd and tests/scratch/model_probe.gd,
+tests/scratch/wheel_origins.gd (Godot 4.7.2 headless)
 Status: parent verified. The first build is recorded at the bottom because the two
 defects it exposed changed the pipeline.
 
@@ -17,8 +17,8 @@ Commands (run from /home/dom/dev/games/semisim):
 
 ## Build output
 
-  EXPORT OK /home/dom/dev/games/semisim/models/tractor.glb      bytes= 61164  scene_tris= 868
-  EXPORT OK /home/dom/dev/games/semisim/models/tractor_lod1.glb bytes= 37424  scene_tris= 310
+  EXPORT OK /home/dom/dev/games/semisim/models/tractor.glb      bytes= 61472  scene_tris= 868
+  EXPORT OK /home/dom/dev/games/semisim/models/tractor_lod1.glb bytes= 37332  scene_tris= 310
 
 `godot-headless --path . --import` after the build: zero ERROR lines, zero
 WARNING lines.
@@ -54,25 +54,29 @@ trailer pivots and belong to models/trailer.glb, which is slice AS2.
   PIVOT cab_eye        class=Node3D pos=(0.000, 2.100, -4.200)
   PIVOT fifth_plate    class=Node3D pos=(0.000, 1.300, -1.000)
   PIVOT kingpin        class=Node3D pos=(0.000, 1.300, -1.000)
-  PIVOT wheel_drive_L  class=Node3D pos=(-1.475, 0.563, 0.000)
-  PIVOT wheel_drive_R  class=Node3D pos=(1.475, 0.563, 0.000)
-  PIVOT wheel_steer_L  class=Node3D pos=(-1.475, 0.554, -6.500)
-  PIVOT wheel_steer_R  class=Node3D pos=(1.475, 0.554, -6.500)
+  PIVOT wheel_drive_L  class=Node3D pos=(-1.100, 0.563, 0.000)
+  PIVOT wheel_drive_R  class=Node3D pos=(1.100, 0.563, 0.000)
+  PIVOT wheel_steer_L  class=Node3D pos=(-1.100, 0.554, -6.500)
+  PIVOT wheel_steer_R  class=Node3D pos=(1.100, 0.554, -6.500)
   PIVOTS_FOUND 7 of 7
   CAB class=MeshInstance3D pos=(0.000, 0.000, 0.000)
   CAB_BOUNDS_MIN (-1.150, 0.950, -5.000) CAB_BOUNDS_MAX (1.150, 2.650, -3.300)
   UPRIGHT_CHECK cab_center_above_drive_axle_center=true
   VEHICLE_WHEEL3D_NODES 0
-  BOUNDS_MIN (-1.623, 0.000, -7.054)
-  BOUNDS_MAX (1.623, 3.100, 0.563)
+  BOUNDS_MIN (-1.450, 0.000, -7.054)
+  BOUNDS_MAX (1.450, 3.100, 0.563)
   UPRIGHT_CHECK height_spans_y=true
 
 Reading: every anchor lands on its pinned coordinate. cab_eye at y 2.10 z -4.20
 matches D1. kingpin and fifth_plate share (0, 1.30, -1.00), which is D2 and is the
 coupling point the coupling controller measures. Steer axle z -6.50 at radius
 0.554 and drive axle z 0.00 at radius 0.563 match physics-spec section 2. The
-model is upright: world bounds run y 0.000 to 3.100, x plus and minus 1.623 with
-mirrors, z -7.054 to 0.563, which is a 7.6 m tractor on a 6.5 m wheelbase. No
+wheel pivot empties and the four wheel node origins both sit on the pinned track
+plane x plus or minus 1.100 (TRACK_HALF_STEER_M, TRACK_HALF_DRIVE_M; D48), and
+tests/scratch/wheel_origins.gd measures each wheel node origin equal to its mesh
+center to three decimals. The model is upright: world bounds run y 0.000 to
+3.100, x plus and minus 1.450 at the mirrors (the tyres now run plus and minus
+1.2475), z -7.054 to 0.563, which is a 7.6 m tractor on a 6.5 m wheelbase. No
 VehicleWheel3D node exists in the imported tractor, which is what the raycast
 suspension wheel design requires. The upright check measures the Cab mesh bounds
 (y 0.950 to 2.650, z -5.000 to -3.300, so the cab sits between the steer axle at

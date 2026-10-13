@@ -2,8 +2,8 @@
 
 Date: 2026-10-12
 Built by: tools/blender/build_trailer.py (Blender 4.5.1, headless)
-Measured by: scripts/tools/model_report.gd and tests/scratch/trailer_probe.gd
-(Godot 4.7.2 headless)
+Measured by: scripts/tools/model_report.gd and tests/scratch/trailer_probe.gd,
+tests/scratch/wheel_origins.gd (Godot 4.7.2 headless)
 Status: parent verified.
 
 Commands (run from /home/dom/dev/games/semisim):
@@ -17,8 +17,8 @@ Commands (run from /home/dom/dev/games/semisim):
 
 ## Build output
 
-  EXPORT OK /home/dom/dev/games/semisim/models/trailer.glb      bytes= 43896  scene_tris= 680
-  EXPORT OK /home/dom/dev/games/semisim/models/trailer_lod1.glb bytes= 25700  scene_tris= 264
+  EXPORT OK /home/dom/dev/games/semisim/models/trailer.glb      bytes= 44280  scene_tris= 680
+  EXPORT OK /home/dom/dev/games/semisim/models/trailer_lod1.glb bytes= 25304  scene_tris= 264
 
 `godot-headless --path . --import` after the build: zero ERROR lines, zero
 WARNING lines.
@@ -92,7 +92,9 @@ The four wheel meshes were measured as world AABB centers (parent re-run, a
 check the build pass did not make): each sits at x plus or minus 1.050, which
 is TRACK_HALF_TRAILER_M, on the pinned bogie axles z 9.600 and 10.400, at y
 0.563 with a measured vertical radius of 0.563. The model wheels are therefore
-coaxial with the physics wheels rather than merely near them.
+coaxial with the physics wheels rather than merely near them. The trailer x was
+already on the pinned track; D48 moved the node origins, which tests/scratch/
+wheel_origins.gd now measures equal to the centers above to three decimals.
 
 ## Required node names
 

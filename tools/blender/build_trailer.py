@@ -15,13 +15,16 @@ Pinned numbers from scripts/physics/PHYSICS_CONSTANTS.gd (not negotiable):
   - Cargo box: 2.59 x 4.07 x 16.15, center (0.0, 2.035, 5.675), so the box
     spans z -2.40..+13.75 and y 0.0..4.07
   - Bogie axle anchors (0, 0.563, 9.60) and (0, 0.563, 10.40); wheel track
-    half width 1.05, rolling radius 0.563
+    half width 1.05 (TRACK_HALF_TRAILER_M), rolling radius 0.563
   - Kingpin (0, 1.30, 0.0)
   - trailer_ref pivot (0, 1.60, 6.00)
   - landing_contact pivot (0, 0.35, -1.20): the spec pins the 0.35 m stroke
     height (LANDING_CONTACT_HEIGHT_M) but never the x and z. 1.20 m behind the
     kingpin plate is the standard 53 ft van landing gear position and it sits
     inside the box footprint. Logged as DEVIATIONS D46.
+  - D48: each wheel node origin is its axle anchor (the first build left
+    every origin at the model origin because transform_apply bakes the
+    location into the vertex data)
 
 Two pipeline rules that cost a rebuild to learn (DEVIATIONS D44, D45):
   - No node or pivot name may end in the word wheel: Godot 4.7.2's glTF
@@ -42,6 +45,7 @@ import os
 import sys
 
 import bpy
+from mathutils import Matrix
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cityhaul_blender as cb  # noqa: E402  (helper lives next to this script)
@@ -86,6 +90,23 @@ def set_material(obj, mat):
     obj.data.materials.append(mat)
 
 
+def axle_wheel(name, radius, width, anchor, axis="X"):
+    """Tyre cylinder whose node origin is the axle anchor, D48.
+
+    cb.cylinder's transform_apply call bakes the object's location into the
+    vertex data (Blender's transform_apply defaults location to True), so the
+    returned object sits at the model origin with world-space vertices and the
+    exported GLB node carries no translation. A wheel node whose origin is the
+    model origin swings the tyre around the chassis when rotated. Shifting the
+    mesh data by -anchor and putting the object location at anchor centres the
+    tyre on the node origin and leaves the world position untouched.
+    """
+    obj = cb.cylinder(name, radius, width, anchor, axis=axis)
+    obj.data.transform(Matrix.Translation((-anchor[0], -anchor[1], -anchor[2])))
+    obj.location = anchor
+    return obj
+
+
 def apply_all(obj):
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
@@ -124,15 +145,16 @@ def build_trailer():
     # Tandem bogie wheels. Front axle z 9.60, rear axle z 10.40 (both behind
     # the kingpin; the trailer rear is +Z). Axle center y 0.563 so the tire
     # bottom rests on the ground plane. L = -X, R = +X, the same side
-    # convention as build_tractor.py.
-    wheel_fl = cb.cylinder("TrailerWheelFL", WHEEL_R, WHEEL_W,
-                           (-WHEEL_X, WHEEL_Y, BOGIE_Z_FRONT), axis="X")
-    wheel_fr = cb.cylinder("TrailerWheelFR", WHEEL_R, WHEEL_W,
-                           (WHEEL_X, WHEEL_Y, BOGIE_Z_FRONT), axis="X")
-    wheel_rl = cb.cylinder("TrailerWheelRL", WHEEL_R, WHEEL_W,
-                           (-WHEEL_X, WHEEL_Y, BOGIE_Z_REAR), axis="X")
-    wheel_rr = cb.cylinder("TrailerWheelRR", WHEEL_R, WHEEL_W,
-                           (WHEEL_X, WHEEL_Y, BOGIE_Z_REAR), axis="X")
+    # convention as build_tractor.py. Each node origin is its axle anchor
+    # (D48) so the wheel can be rotated about the axle.
+    wheel_fl = axle_wheel("TrailerWheelFL", WHEEL_R, WHEEL_W,
+                          (-WHEEL_X, WHEEL_Y, BOGIE_Z_FRONT), axis="X")
+    wheel_fr = axle_wheel("TrailerWheelFR", WHEEL_R, WHEEL_W,
+                          (WHEEL_X, WHEEL_Y, BOGIE_Z_FRONT), axis="X")
+    wheel_rl = axle_wheel("TrailerWheelRL", WHEEL_R, WHEEL_W,
+                          (-WHEEL_X, WHEEL_Y, BOGIE_Z_REAR), axis="X")
+    wheel_rr = axle_wheel("TrailerWheelRR", WHEEL_R, WHEEL_W,
+                          (WHEEL_X, WHEEL_Y, BOGIE_Z_REAR), axis="X")
     for w in (wheel_fl, wheel_fr, wheel_rl, wheel_rr):
         set_material(w, tire)
 
