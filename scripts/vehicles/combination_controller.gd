@@ -438,11 +438,23 @@ func _step_wheel(
 	var hit: Dictionary = space.intersect_ray(query)
 	if hit.is_empty():
 		w.grounded = false
+		w.ground_rid = RID()  # next contact re-reads the surface meta
 		w.normal_n = 0.0
 		return
 	w.grounded = true
 	var hit_pos: Vector3 = hit["position"]
 	w.contact_global = hit_pos
+	# Surface (AS4e): the ground this wheel sits on, tagged on the collider by
+	# a "surface" meta. The meta read is gated on the hit collider's RID
+	# changing: String(...) from a Variant allocates, and this step runs eight
+	# times per tick at 120 Hz. No meta means "dry", so the untagged yard keeps
+	# identical behaviour.
+	var hit_rid: RID = hit["rid"]
+	if hit_rid != w.ground_rid:
+		w.ground_rid = hit_rid
+		var collider: Object = hit["collider"]
+		if collider != null:
+			w.surface = String(collider.get_meta("surface", "dry"))
 	var gap: float = anchor_global.y - hit_pos.y
 	var compression: float = clampf(
 		radius - gap, -PHYSICS_CONSTANTS.SUSPENSION_TRAVEL_M, PHYSICS_CONSTANTS.SUSPENSION_TRAVEL_M

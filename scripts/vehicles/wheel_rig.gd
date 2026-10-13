@@ -19,6 +19,14 @@ var ang_vel_rad_s: float = 0.0
 var last_lateral_n: float = 0.0
 var last_longitudinal_n: float = 0.0
 var abs_engaged: bool = false
+## Ground surface this wheel last touched: "dry", "wet" or "ice". The
+## controller writes it from the suspension ray hit's collider meta (AS4e).
+var surface: String = "dry"
+## RID of the collider the suspension ray last hit. The surface meta read is
+## gated on a change of this RID: String(...) from a Variant allocates, and the
+## wheel step runs eight times per tick at 120 Hz.
+var ground_rid: RID
+var _warned_surfaces: Dictionary = {}
 
 
 func rolling_radius() -> float:
@@ -26,6 +34,13 @@ func rolling_radius() -> float:
 
 
 func mu() -> float:
+	if tire.has("mu_" + surface):
+		return tire["mu_" + surface]
+	# Unknown surface name: fall back to dry rather than crash, and warn once
+	# per name instead of every tick.
+	if not _warned_surfaces.has(surface):
+		_warned_surfaces[surface] = true
+		push_warning("WheelRig.mu: no 'mu_%s' in tire table, falling back to mu_dry" % surface)
 	return tire["mu_dry"]
 
 

@@ -1,0 +1,234 @@
+CITYHAUL AS4e: surface-dependent tire mu, saturation and ABS become reachable
+=============================================================================
+
+Repo state: on main at HEAD 353d539 (after AS4d). This slice changes only
+scripts/vehicles/wheel_rig.gd, scripts/vehicles/combination_controller.gd
+(suspension step), tests/unit/test_wheel_surfaces.gd (new),
+tests/scratch/wheel_saturation_probe.gd (surface argument), this file, and one
+row (D49) in docs/DEVIATIONS.md. No PHYSICS_CONSTANTS value, the tire model,
+the friction ellipse, the ABS thresholds or the AS4d no-slip assignment were
+touched.
+
+## The change
+
+WheelRig.mu() returned tire["mu_dry"] unconditionally, so the mu_wet 0.72 and
+mu_ice 0.25 columns of the tire table were dead data and the friction ellipse
+never saturated: 21,314 N demand against a 65,654 N adhesion limit on the dry
+yard, abs_engaged false, slip never leaving about -0.003
+(docs/evidence/phase1/wheel_roll.txt).
+
+Now:
+
+1. WheelRig gains var surface: String = "dry" and var ground_rid: RID.
+   mu() returns tire["mu_" + surface], falling back to tire["mu_dry"] when the
+   key is missing, with a one-time push_warning per unknown name (not every
+   tick). It never crashes on an unknown name.
+2. In the combination controller's suspension step the hit collider's RID is
+   stored per wheel, and only when it changes does the controller read
+   w.surface = String(collider.get_meta("surface", "dry")). Rationale in the
+   code: String(...) from a Variant allocates, and the wheel step runs eight
+   times per tick at 120 Hz, so the meta read is gated on a RID change instead
+   of running every tick. On a ray miss the stored RID resets, so the next
+   contact re-reads. No meta means "dry", so the untagged yard keeps
+   byte-identical behaviour.
+3. D49 (docs/DEVIATIONS.md): the surface channel is a collider meta tag rather
+   than a physics material, because the raycast suspension (D21) has no contact
+   object to read a PhysicsMaterial from and the torque-demand tire model takes
+   fz and mu as plain numbers per wheel step.
+
+## Commands (run from /home/dom/dev/games/semisim)
+
+  timeout 500 godot-headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gdir=res://tests/unit -ginclude_subdirs -gexit
+  timeout 300 godot-headless --path . tests/sim/smoke_controls.tscn
+  timeout 300 godot-headless --path . -s res://tests/scratch/wheel_spin_probe.gd
+  timeout 300 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd
+  timeout 300 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd -- ice
+  ~/.local/bin/gdformat --check scripts tests
+  ~/.local/bin/gdlint scripts tests/unit tests/sim
+
+## Unit suite totals
+
+Before (HEAD, no new test):   Scripts 23, Tests 186, Passing 186, Failing 0,
+                              Asserts 5123
+RED (new test file, original code, written first):
+                              Scripts 24, Tests 191, Passing 187, Failing 4,
+                              Asserts 5130/5134. All four failures are the
+                              missing channel: test_mu_reads_the_pinned_
+                              surface_values and test_unknown_surface_falls_
+                              back_to_dry die on "Invalid access/assignment to
+                              property 'surface' on a base object of type
+                              'RefCounted (WheelRig)'", test_ice_ground_sets_
+                              the_wheel_surface dies on the same access, and
+                              test_ice_launch_saturates_the_drive_tyre_and_
+                              engages_abs fails its v_final > 1.0 gate
+                              (v_final -2.855 m/s). test_dry_launch_keeps_abs_
+                              off passes on the original code by design: it is
+                              the regression guard, not a discriminator.
+After (this slice):           Scripts 24, Tests 191, Passing 191, Failing 0,
+                              Asserts 5162. Time 134.425 s. The single warning
+                              in the run is the intended one-time
+                              "WheelRig.mu: no 'mu_moon' in tire table" from
+                              the unknown-name test.
+
+## Smoke
+
+  SMOKE actions=135 speed=0.052 gear=1 cameras=CAB,TRAILER,FREE,CHASE audio_samples=25200 audio_hiss=false
+  SMOKE OK
+
+## Dry regression: wheel_spin_probe, 10 s full-throttle launch, one sample per second
+
+  t=0.0  speed=0.06  omega=-0.067   slip=0.0002   node_spin=0.0 deg
+  t=1.0  speed=0.70  omega=1.267    slip=-0.0072  node_spin=28.2 deg
+  t=2.0  speed=1.38  omega=2.440    slip=-0.0047  node_spin=116.4 deg
+  t=3.0  speed=2.01  omega=3.581    slip=-0.0030  node_spin=100.4 deg
+  t=4.0  speed=2.65  omega=4.711    slip=-0.0029  node_spin=96.6 deg
+  t=5.0  speed=3.64  omega=6.470    slip=-0.0031  node_spin=1.6 deg
+  t=6.0  speed=4.75  omega=8.441    slip=-0.0023  node_spin=8.5 deg
+  t=7.0  speed=5.31  omega=9.428    slip=-0.0006  node_spin=65.6 deg
+  t=8.0  speed=5.63  omega=9.999    slip=-0.0006  node_spin=164.6 deg
+  t=9.0  speed=5.95  omega=10.576   slip=-0.0005  node_spin=68.9 deg
+  t=10.0 speed=6.26  omega=11.125   slip=-0.0005  node_spin=89.5 deg
+
+Versus AS4d in docs/evidence/phase1/wheel_roll.txt (t=1..10): the slip column
+is identical on all ten shared lines. Speed differs by at most 0.01 m/s and
+omega by at most 0.021 rad/s (0.3 percent at t=5, the largest); at t=6..10
+most lines match to three significant figures. The t=1.0 line differs by
+0.01 m/s (1.4 percent of 0.69) and 0.013 rad/s (1.04 percent of 1.254): the
+probe samples once per PROCESS frame, and the process-frame-to-physics-tick
+mapping drifts by one physics tick (about 10 ms) between runs, so the once-per-
+second samples catch a state one tick later. A repeated run reproduces these
+values exactly (deterministic; the t=0 line is not in wheel_roll.txt, whose
+block starts at t=1.0). The hard comparison point is the brake-start sample of
+the saturation probe below: byte-identical to the AS4d numbers.
+
+## Saturation probe: dry versus ice, same maneuver
+
+tests/scratch/wheel_saturation_probe.gd: settle 1 s, drive 4 s at throttle
+1.0, then brake pinned at 1.0 (the probe's brake phase runs 6 s; the vehicle
+is stopped by t=1.0 on both surfaces, so the 3 s window of the brief is the
+first three samples). t=0.0 is brake start. "demand" is the probe's brake-only
+column, brake_nm / radius (12,000 / 0.563).
+
+DRY:
+  SAT t=0.0 speed=2.65 omega=4.711 v_over_r=4.709 slip=-0.0029 abs=false normal_n=57090 adhesion_n=65654 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=0.022 v_over_r=0.000 slip=+0.0062 abs=false normal_n=57544 adhesion_n=66176 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.00 omega=-0.037 v_over_r=0.000 slip=-0.0133 abs=false normal_n=57964 adhesion_n=66659 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0279 abs=false normal_n=57707 adhesion_n=66364 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.004 v_over_r=0.000 slip=-0.0006 abs=false normal_n=59551 adhesion_n=68483 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=0.022 v_over_r=0.000 slip=+0.0110 abs=false normal_n=57907 adhesion_n=66593 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.05 omega=-0.048 v_over_r=0.094 slip=+0.0064 abs=false normal_n=60855 adhesion_n=69984 brake_nm=12000 demand_n=21314
+
+ICE:
+  SAT t=0.0 speed=1.69 omega=200.000 v_over_r=3.010 slip=+65.4483 abs=true normal_n=57557 adhesion_n=14389 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=-0.001 v_over_r=0.000 slip=-0.0000 abs=true normal_n=58745 adhesion_n=14686 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=true normal_n=58084 adhesion_n=14521 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=-0.0000 abs=true normal_n=57987 adhesion_n=14497 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=-0.0000 abs=true normal_n=57978 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=-0.0000 abs=true normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=true normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+
+Side by side (brake phase, sampled once per second):
+
+  t   | dry: adhesion  demand  slip      abs   | ice: adhesion  demand  slip      abs
+  ----+--------------------------------------+------------------------------------
+  0.0 |   65,654       21,314  -0.0029   false |   14,389       21,314  +65.4483  true
+  1.0 |   66,176       21,314  +0.0062   false |   14,686       21,314  -0.0000   true
+  2.0 |   66,659       21,314  -0.0133   false |   14,521       21,314  +0.0000   true
+  3.0 |   66,364       21,314  +0.0279   false |   14,497       21,314  -0.0000   true
+  4.0 |   68,483       21,314  -0.0006   false |   14,494       21,314  -0.0000   true
+  5.0 |   66,593       21,314  +0.0110   false |   14,494       21,314  -0.0000   true
+  6.0 |   69,984       21,314  +0.0064   false |   14,494       21,314  +0.0000   true
+
+Reading:
+
+- Dry: at brake start the 21,314 N demand sits at 32.5 percent of the 65,654 N
+  adhesion limit (the exact AS4d numbers, byte-identical: 2.65 m/s, 4.711
+  rad/s, 57,090 N normal, -0.0029 slip). The friction ellipse never
+  saturates, the wheel stays on the no-slip line, the combination stops in
+  under one second, and ABS never engages.
+- Ice: the 4 s full-throttle launch reaches only 1.69 m/s (64 percent of the
+  dry 2.65 m/s) because the drive tyre is traction-limited the whole way, with
+  the wheel at the 200 rad/s integrator clamp (66.4 times the 3.010 rad/s
+  no-slip rate) by brake start. At brake start the same 21,314 N demand sits
+  at 148 percent of the 14,389 N adhesion limit, so the friction ellipse is
+  saturated: the saturated-integrator branch runs, slip is +65.4, and ABS is
+  engaged from the first brake sample. It stays engaged after the vehicle
+  stops: the ABS release check lives inside the saturated branch (pre-existing
+  AS4d structure, not touched by this slice) and at rest the engine-brake
+  demand is below adhesion, so the flag latches. Recorded here, not changed.
+- Ice adhesion is a constant 0.25 x normal across all seven samples
+  (14,389..14,686 N, only the normal varies), confirming the ray sits on the
+  tagged ground for the whole run.
+
+## Formatting and lint
+
+  ~/.local/bin/gdformat --check scripts tests
+    -> 143 files would be left unchanged.
+  ~/.local/bin/gdlint scripts tests/unit tests/sim
+    -> Success: no problems found
+
+## Diffs (no git run per the brief; the parent's review sees the git diff)
+
+scripts/vehicles/wheel_rig.gd, added fields and the new mu():
+
+    var abs_engaged: bool = false
+    +## Ground surface this wheel last touched: "dry", "wet" or "ice". The
+    +## controller writes it from the suspension ray hit's collider meta (AS4e).
+    +var surface: String = "dry"
+    +## RID of the collider the suspension ray last hit. The surface meta read is
+    +## gated on a change of this RID: String(...) from a Variant allocates, and the
+    +## wheel step runs eight times per tick at 120 Hz.
+    +var ground_rid: RID
+    +var _warned_surfaces: Dictionary = {}
+
+    func mu() -> float:
+    -	return tire["mu_dry"]
+    +	if tire.has("mu_" + surface):
+    +		return tire["mu_" + surface]
+    +	# Unknown surface name: fall back to dry rather than crash, and warn once
+    +	# per name instead of every tick.
+    +	if not _warned_surfaces.has(surface):
+    +		_warned_surfaces[surface] = true
+    +		push_warning("WheelRig.mu: no 'mu_%s' in tire table, falling back to mu_dry" % surface)
+    +	return tire["mu_dry"]
+
+scripts/vehicles/combination_controller.gd, the suspension step in
+_step_wheel, where the ray hit is handled:
+
+     var hit: Dictionary = space.intersect_ray(query)
+     if hit.is_empty():
+     	w.grounded = false
+    +	w.ground_rid = RID()  # next contact re-reads the surface meta
+     	w.normal_n = 0.0
+     	return
+     w.grounded = true
+     var hit_pos: Vector3 = hit["position"]
+     w.contact_global = hit_pos
+    +# Surface (AS4e): the ground this wheel sits on, tagged on the collider by
+    +# a "surface" meta. The meta read is gated on the hit collider's RID
+    +# changing: String(...) from a Variant allocates, and this step runs eight
+    +# times per tick at 120 Hz. No meta means "dry", so the untagged yard keeps
+    +# identical behaviour.
+    +var hit_rid: RID = hit["rid"]
+    +if hit_rid != w.ground_rid:
+    +	w.ground_rid = hit_rid
+    +	var collider: Object = hit["collider"]
+    +	if collider != null:
+    +		w.surface = String(collider.get_meta("surface", "dry"))
+     var gap: float = anchor_global.y - hit_pos.y
+
+## Measurement pitfall found and fixed along the way
+
+The first ice probe run was contaminated. A SceneTree-script probe that swaps
+the ground in _init finds no old ground, because the harness builds its ground
+in _ready, which in SceneTree-script mode runs on the first frame, not during
+_init. The swap therefore left a SECOND co-located ground, and the suspension
+ray tie-flipped between the two identical-height surfaces every frame: the
+surface (and hence mu) flickered ice/dry, and the first ice SAT block showed
+dry-mu adhesion (66,675 N) at t=4/5. Measured with a temporary tracer probe
+(removed), which showed the hit RID alternating between the two StaticBody3D
+colliders every frame. The probe now defers the swap to the first _process
+tick, after the harness _ready has run; the corrected ice run above shows a
+constant ice adhesion. The unit test is unaffected: under GUT the harness
+_ready runs synchronously during add_child, so its swap finds the old ground.
