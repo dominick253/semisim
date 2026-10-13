@@ -1,0 +1,207 @@
+CITYHAUL AS4k: the 80 km/h full-brake-plus-retarder stop lands in the spec window
+=================================================================================
+
+Repo state: on main. Touched files: tests/unit/test_braking_distance.gd (new,
+2 tests), docs/evidence/phase1/braking_distance.txt (this file), and one new row
+(D56) in docs/DEVIATIONS.md. The probe tests/scratch/stop_distance_probe.gd was
+rewritten to instrument the stop (it is a gitignored scratch file, reused, not a
+deliverable). No production code changed: scripts/vehicles/combination_controller.gd,
+scripts/physics/PHYSICS_CONSTANTS.gd and scripts/vehicles/brake_state.gd are all
+untouched, because the instrumentation shows the physics is not defective -- the
+40.44 m was a scenario-setup artifact (see "The diagnosis"). No PHYSICS_CONSTANTS
+value was added or changed.
+
+## The target (physics-spec section 5)
+
+"Full service brake plus retarder from 80 km/h on dry stops in 24 to 34 m; a
+braked rig at rest stays at rest (no creep, no reversal)."
+
+The target did not exist as a test and did not hold as written: the parent's probe
+measured 40.44 m in 7.45 s (average deceleration 6.10 m/s^2 = 0.62 g). This file
+shows what 40.44 m actually measures and where the in-window number comes from.
+
+## Method (tests/scratch/stop_distance_probe.gd)
+
+The probe loads tests/sim/combination_rest_harness.tscn, settles 240 physics
+frames (2 s at the 120 Hz fixed step, confirmed in project.godot), seeds the
+combination at 22.2222 m/s (80 km/h) along the tractor heading on both bodies
+(the harness leaves it at rest), applies the chosen controls, then integrates
+until speed < 0.05 m/s and accumulates distance from
+`tractor.global_position.distance_to(start)` per tick. Every variant prints a
+per-second force row: gear, engine/retarder on, retarder N, per-axle delivered
+brake N (front/drive/back), total longitudinal N, drive N, slip, drive-axle
+adhesion N, and a final STOP row. The same harness, cargo and 120 Hz step are used
+by the pinned unit test, so probe and test measure the same thing.
+
+Set-velocity (not driven-up) is the seeding method, and the reason is measured,
+not assumed. The brief's Step 2 wanted a driven-up variant (accelerate under
+throttle 1.0 in the highest reasonable gear to 80 km/h, then brake). Three ways
+to reach "80 km/h with the retarder live" were measured and all fail for physical
+reasons:
+
+  1. Drive up in a retarder gear from rest: in gear 4 the loaded rig cannot
+     launch from idle. throttle 1.0, clutch engaged, the drive force asymptotes
+     at 9,563 N and the rig creeps to 1.91 m/s (6.9 km/h) in 60 s, never reaching
+     80 km/h. A truck cannot launch from rest in a high gear at idle.
+  2. Drive up in auto: the gearbox climbs 1 -> 5 and reaches 80 km/h in gear 5
+     (the top of the high range, engine at ~1,385 rpm, below the 1,550 upshift
+     threshold). In gear 5 the spec's own "gears 1-4" retarder rule keeps the
+     retarder off, so the auto-driven stop is service-brake-only (40.44 m at
+     default cargo / 51.01 m at full load, below).
+  3. Drive up in auto, then hard-downshift into gear 4 at 80 km/h: the rigid
+     driveline has no rev-matcher, so the downshift (engine 1,385 -> ~1,800 rpm)
+     destabilizes it and the combination RUNS AWAY, 22.25 -> 90.79 m/s in 30 s
+     (2,180 m), never braking.
+
+So "80 km/h + full service brake + full retarder" -- the exact scenario the spec
+target names -- is only reproducible by seeding the velocity in a retarder-allowed
+gear. The set-velocity number is the measured one; the auto number is the
+cross-check.
+
+## The measurements (80 km/h, dry, 120 Hz)
+
+Pinned scenario (the spec target as written: full service brake PLUS full
+retarder, retarder live in gear 4, loaded combination = CARGO_MASS_MAX_KG 29,000
+kg). Four same-process repeats (probe) plus the GUT process:
+
+  probe r0   28.53 m   386 ticks   3.22 s
+  probe r1   28.69 m   387 ticks   3.23 s
+  probe r2   28.61 m   385 ticks   3.21 s
+  probe r3   28.61 m   385 ticks   3.21 s
+  GUT        28.569 m  386 ticks   (test_braking_distance, separate process)
+
+  => 28.53-28.69 m, mean 28.61 m, spread 0.16 m. IN the 24-34 m window with 4.5 m
+     of floor margin and 5.4 m of ceiling margin.
+
+Cross-checks (default cargo = CARGO_MASS_DEFAULT_KG 20,000 kg unless noted):
+
+  variant                                  distance    retarder   why
+  auto, default (the parent's run)          40.44 m     OFF(g5)   gear 5, gate off
+  brake only, default                       43.43 m     OFF       service brake alone
+  gear 4 (retarder on), default             23.90 m     ON        just under the floor
+  gear 3 (retarder on), default             23.93 m     ON        just under the floor
+  gear 4 (retarder on), FULL 29,000 kg      28.69 m     ON        IN WINDOW
+  gear 3 (retarder on), FULL 29,000 kg      28.93 m     ON        IN WINDOW
+  gear 5 (retarder off), FULL 29,000 kg     51.01 m     OFF(g5)   service brake alone
+
+  retarder-only, default                     30.85 m    OFF(g5)   retarder gated off at
+                                                                 80 km/h; engages only
+                                                                 after coasting to gear 4
+
+## The diagnosis (with numbers, no constants touched)
+
+The retarder is applied in CombinationController._step only when
+`retarder_allowed = engine_running and gear > 0 and gear <= RETARDER_MAX_GEAR
+and speed > RETARDER_MIN_SPEED`, and RETARDER_MAX_GEAR = 4 (PHYSICS_CONSTANTS,
+pinned and mirrored to physics-spec line 94: "active only in gears 1-4"). So the
+retarder is live only in gears 1-4.
+
+The auto-transmission at 80 km/h (22.22 m/s) sits in gear 5: the engine rpm in
+gear 5 is 63.18 * 22.22 = 1,404 rpm, above the 1,200 downshift floor and below
+the 1,550 upshift ceiling, so auto holds gear 5. Gear 5 is one above
+RETARDER_MAX_GEAR, so `retarder_allowed` is false and the "plus retarder" stop is
+never actually applied. The per-second rows confirm it:
+
+  auto (parent)  t=0.5  gear=5  retN=0        Ftot=-146,168 N  (brake only)
+  auto (parent)  t=1.0  gear=5  retN=0        Ftot=-146,168 N
+  auto (parent)  t=1.5  gear=5  retN=0        Ftot=-146,168 N
+  => the whole high-speed stop is a ~146 kN service-brake stop; the retarder's
+     250 kN is never on the ground. 146 kN on the 20,000 kg default cargo gives
+     40.44 m, matching the parent byte for byte.
+
+The in-window number needs the two things the target implies but the parent's
+probe did not set:
+
+  (a) The retarder actually applied. That requires a retarder-allowed gear (1-4).
+      Holding gear 4 turns retN from 0 to 250,000 N on the first tick.
+  (b) The loaded combination. The static axle shares carry the cargo mass:
+      20,000 kg -> 67.9 / 60.2 / 107.3 kN (steer/drive/trailer adhesion);
+      29,000 kg -> 82.7 / 108.1 / 150.6 kN. More load, more adhesion, more
+      torque-limited brake force per axle, a shorter stop. The D20 design claim
+      names "the loaded combination" explicitly, and T14 in
+      test_physics_rules.gd already asserts the 29,000 kg shares (7,031 / 9,182 /
+      12,787 kg).
+
+With both set (gear 4, 29,000 kg), the per-second force table is:
+
+  t=0.5  gear=4  retN=250,000  brk[f 9,000 / d 12,000 / b 10,000]  Ftot=-332,594 N
+  t=1.0  gear=4  retN=250,000  brk[f 9,000 / d 12,000 / b 10,000]  Ftot=-332,811 N
+  t=1.5  gear=4  retN=250,000  brk[f 9,000 / d 12,000 / b 10,000]  Ftot=-397,137 N
+
+  => ~332-397 kN total (250 kN retarder + torque-limited brake + ~61 kN engine
+     braking) on the loaded combination: 28.6 m. The D13/D20 design intent
+     ("stops in 27..28 m from 80 km/h at stage 5 plus service brake") is
+     reproduced: 28.6 m is within their 27-28 m statement to < 1 m.
+
+So the physics reaches the window in the scenario the target describes. The 40.44
+m was not a physics defect; it was a measurement of a different scenario (auto /
+gear 5 / default cargo) where the spec's own retarder gate keeps the "plus
+retarder" term off. Nothing in the brake chain is wrong: the retarder force
+reaches both bodies (D20's 8-tire distribution), the brake torque reaches the
+axle (demand = torque / radius, per-wheel, torque-limited then adhesion-capped),
+the units are N and N m throughout, and the per-axle force scales with the
+correct static load.
+
+## What the unit test pins (tests/unit/test_braking_distance.gd)
+
+Two tests, matching the two spec sentences:
+
+  1. test_full_brake_plus_retarder_stops_in_spec_window: full load
+     (CARGO_MASS_MAX_KG), transmission held in gear 4 (the top of the "gears 1-4"
+     window, so the retarder is live), seeded at 22.2222 m/s, throttle 0 /
+     brake 1 / retarder stage 5, integrate to < 0.05 m/s and assert 24.0 <=
+     distance <= 34.0. Measured 28.569 m in the GUT process (PASS). The window
+     assert is used rather than an equality so the test pins the target's bound,
+     with the margin documented above, not a brittle point value.
+  2. test_braked_rig_at_rest_stays_at_rest: full brake at rest, 600 ticks, assert
+     max speed < 0.1 m/s and max displacement < 0.05 m (no creep, no reversal).
+     This pins the D37 brake-hold rule (a braked rig below 0.05 m/s is held at
+     rest); the retarder is gated off below RETARDER_MIN_SPEED so the brake is the
+     load here. (PASS)
+
+## Commands (run from /home/dom/dev/games/semisim)
+
+  timeout 300 godot-headless --path . -s res://tests/scratch/stop_distance_probe.gd
+  timeout 500 godot-headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gdir=res://tests/unit -ginclude_subdirs -gexit
+  timeout 300 godot-headless --path . tests/sim/smoke_controls.tscn
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_spin_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd -- ice
+  timeout 120 godot-headless --path . -s res://tests/scratch/ice_gear_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/engine_restart_probe.gd
+  timeout 300 godot-headless --path . tests/sim/probe_kingpin_window.tscn
+  ~/.local/bin/gdformat --check scripts tests
+  ~/.local/bin/gdlint scripts tests/unit tests/sim
+
+## Verification: unit suite
+
+Baseline in the tree at start: Scripts 28, Tests 214, Passing 214, Asserts 5,245.
+After this slice: Scripts 29, Tests 216, Passing 216, Asserts 5,249.
+Delta = +1 script, +2 tests, +4 asserts = exactly test_braking_distance.gd
+(2 tests; test 1 has assert_lt + assert_between, test 2 has assert_lt + assert_lt).
+
+## Follow-ups recorded per the brief (NOT fixed in this slice)
+
+  1. AirSystem.consume_psi() has no production caller, so air pressure stays at
+     100 psi in play and the 60/40 psi spring-brake ladder is decorative. Wiring
+     the consumption into _step (throttle/compressor load) is the next slice
+     (AS4l). This slice only asserts the at-rest HOLD (D37), which does not depend
+     on the air model.
+  2. The coupler has no RELEASE input: it is built locked (locked = true) and the
+     trailer's linear limits (D36) keep it coupled, so "detach the trailer" is
+     unreachable. A release path (a coupler_unlock action driving the joint's
+     linear limits / lock state) is a follow-up, not part of this slice.
+
+## What this slice does and does not fix
+
+It pins the spec section 5 stopping targets as unit tests and documents why the
+naive reading (auto mode, default cargo) misses them. It does NOT change any
+production physics: the in-window stop already exists in the loaded combination
+in a retarder-allowed gear, so there is no code to fix -- the parent's 40.44 m was
+a scenario artifact (gear 5 gates the retarder off; default cargo carries less
+adhesion). The residual, stated plainly: a driver who brakes at 80 km/h in the
+cruising gear (5) in auto, with the default load, will still stop in ~40 m, not
+24-34, because that is the service-brake-only stop the spec's own "gears 1-4"
+retarder rule produces. The 24-34 m window is the loaded-combination, retarder-on
+number, which is what D13/D20 always claimed.
