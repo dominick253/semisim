@@ -46,6 +46,16 @@ var scripted_input: Callable = Callable()  # scenario scripts inject inputs here
 var steer_rate_deg_s: float = PHYSICS_CONSTANTS.KEYBOARD_STEER_RATE_DEG_S
 var _prev_forward_speed: float = 0.0
 var _prev_velocity: Vector3 = Vector3.ZERO
+## Per-body wheel-node caches (D47 pattern, copies CameraRig._PivotCache): the
+## tree is walked once per body per controller lifetime, not every tick.
+var _steer_l_cache := _WheelNodeCache.new()
+var _steer_r_cache := _WheelNodeCache.new()
+var _drive_l_cache := _WheelNodeCache.new()
+var _drive_r_cache := _WheelNodeCache.new()
+var _trailer_fl_cache := _WheelNodeCache.new()
+var _trailer_fr_cache := _WheelNodeCache.new()
+var _trailer_rl_cache := _WheelNodeCache.new()
+var _trailer_rr_cache := _WheelNodeCache.new()
 
 @onready var tractor: RigidBody3D = $Tractor
 @onready var trailer: RigidBody3D = $Trailer
@@ -581,31 +591,50 @@ func _offset_from_origin(body: RigidBody3D, global_point: Vector3) -> Vector3:
 
 
 func _update_wheel_visuals() -> void:
-	# A5: all 8 wheel nodes steer or rotate.
+	# A5: all 8 wheel nodes steer or rotate. The GLB wheels are MeshInstance3D
+	# whose origin sits on the axle (AS4a), so the node itself is the spin
+	# target; a placeholder wheel is a Node3D carrying a child named Mesh, so
+	# that child spins instead. Each wheel is resolved through
+	# ModelPivots.find_pivot with a per-body cache so the tree is walked once
+	# per body per lifetime, not every tick (D47, the CameraRig pattern).
 	var spin: float = wheel_omega_rad_s * DT
 	var steer_rad: float = steer_angle_rad
-	var steer_nodes: Array = [
-		tractor.get_node_or_null("WheelSteerL"),
-		tractor.get_node_or_null("WheelSteerR"),
-	]
-	for node in steer_nodes:
+	# Steer axle: spin the wheel first, then set the yaw last so rotation.y
+	# reads back exactly the commanded steer angle even though the node itself
+	# also spins (the placeholder keeps the identical end state: the child mesh
+	# spins, the node's yaw is set).
+	for node in [
+		_steer_l_cache.resolve_for(tractor, "WheelSteerL"),
+		_steer_r_cache.resolve_for(tractor, "WheelSteerR"),
+	]:
 		if node == null:
 			continue
+		_spin_wheel(node, spin)
 		node.rotation.y = steer_rad
-		var mesh: Node3D = node.get_node_or_null("Mesh")
-		if mesh != null:
-			mesh.rotate_object_local(Vector3(0.0, 0.0, -1.0), spin)
-	for other in ["WheelDriveL", "WheelDriveR"]:
-		var node: Node3D = tractor.get_node_or_null(other)
-		if node == null:
-			continue
-		var mesh: Node3D = node.get_node_or_null("Mesh")
-		if mesh != null:
-			mesh.rotate_object_local(Vector3(0.0, 0.0, -1.0), spin)
-	for wname in ["TrailerWheelFL", "TrailerWheelFR", "TrailerWheelRL", "TrailerWheelRR"]:
-		var node: Node3D = trailer.get_node_or_null(wname)
-		if node == null:
-			continue
+	# Drive axle and trailer bogie: spin only.
+	for node in [
+		_drive_l_cache.resolve_for(tractor, "WheelDriveL"),
+		_drive_r_cache.resolve_for(tractor, "WheelDriveR"),
+		_trailer_fl_cache.resolve_for(trailer, "TrailerWheelFL"),
+		_trailer_fr_cache.resolve_for(trailer, "TrailerWheelFR"),
+		_trailer_rl_cache.resolve_for(trailer, "TrailerWheelRL"),
+		_trailer_rr_cache.resolve_for(trailer, "TrailerWheelRR"),
+	]:
+		_spin_wheel(node, spin)
+
+
+func _spin_wheel(node: Node3D, spin: float) -> void:
+	## Spin a wheel about its own axle. The GLB tyre's axle is local X
+	## (measured from the build, D48: extents (0.29, 1.11, 1.11)), so a
+	## MeshInstance3D wheel rotates about X. A placeholder wheel is a Node3D
+	## with a child named Mesh whose cylinder axis is local Z (the mesh is
+	## rotated 90 deg about X in the scene), so that child rotates about -Z --
+	## the pre-slice behaviour, kept identical so nothing else breaks.
+	if node == null:
+		return
+	if node is MeshInstance3D:
+		node.rotate_object_local(Vector3(1.0, 0.0, 0.0), spin)
+	else:
 		var mesh: Node3D = node.get_node_or_null("Mesh")
 		if mesh != null:
 			mesh.rotate_object_local(Vector3(0.0, 0.0, -1.0), spin)
@@ -871,3 +900,34 @@ func try_auto_coupling() -> void:
 		and dist > PHYSICS_CONSTANTS.ALIGNING_DISTANCE_M
 	):
 		GAME_STATE.set_coupling_state(GAME_STATE.CouplingState.DETACHED)
+
+
+class _WheelNodeCache:
+	## One resolved wheel node, cached per body so the tree is walked at most
+	## once per body per controller lifetime (D47, copies CameraRig._PivotCache).
+	## Returns null once the body's Model is removed; otherwise re-resolves only
+	## when the cached reference fails is_instance_valid (body replaced, model
+	## swapped out).
+	var body: Node = null
+	var node: Node3D = null
+
+	func resolve_for(body: Node, node_name: String) -> Node3D:
+		# Re-check the Model parent is present first (D47, the CameraRig pattern):
+		# a wheel node is a descendant of the body's Model, and is_instance_valid
+		# has a one-frame lag after queue_free, so a freed Model's wheels can
+		# briefly report valid and get passed to a typed call. get_node_or_null is
+		# an immediate tree check (no lag) and the Model is a direct child, so this
+		# is cheap and reliable.
+		if body == null or body.get_node_or_null("Model") == null:
+			self.node = null
+			return null
+		var fresh: bool = (
+			self.body == body
+			and is_instance_valid(self.body)
+			and (self.node == null or is_instance_valid(self.node))
+		)
+		if fresh:
+			return self.node
+		self.node = ModelPivots.find_pivot(body, node_name)
+		self.body = body
+		return self.node

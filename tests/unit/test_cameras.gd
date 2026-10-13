@@ -237,8 +237,14 @@ func test_right_stick_jumps_to_free_instead_of_cycling() -> void:
 
 
 func test_cab_eye_falls_back_to_the_pinned_local_without_a_model() -> void:
-	await _harness.settle(30)
+	# AS4b parents the GLB in tractor.tscn, so "without a model" now means the
+	# tractor's Model node has been removed: with no cab_eye empty the rig must
+	# return the pinned CAB_EYE_LOCAL, not a stale anchor.
 	var body: RigidBody3D = _harness.controller.tractor as RigidBody3D
+	var model: Node = body.get_node_or_null("Model")
+	assert_true(model != null, "the GLB Model node is parented under the tractor")
+	model.queue_free()
+	await _harness.settle(30)
 	var expected: Vector3 = body.global_transform * PHYSICS_CONSTANTS.CAB_EYE_LOCAL
 	assert_almost_eq(
 		_rig.cab_eye_global(),
@@ -280,12 +286,13 @@ func _parent_tractor_model(body: RigidBody3D) -> Node:
 
 
 func test_cab_eye_returns_to_fallback_after_the_model_is_removed() -> void:
-	## Parent-added regression guard for the per-body pivot cache. The next
-	## slice swaps the placeholder visuals for the GLB, so a cached pivot whose
-	## node has been freed must re-resolve to the fallback instead of reporting
-	## an anchor that no longer exists.
+	## Regression guard for the per-body pivot cache. AS4b parents the GLB in
+	## tractor.tscn, so the cab_eye source is the tractor's own Model node: a
+	## cached pivot whose node has been freed must re-resolve to the fallback
+	## instead of reporting an anchor that no longer exists.
 	var body: RigidBody3D = _harness.controller.tractor as RigidBody3D
-	var model: Node = _parent_tractor_model(body)
+	var model: Node = body.get_node_or_null("Model")
+	assert_true(model != null, "the GLB Model node is parented under the tractor")
 	await _harness.settle(30)
 	var with_model: Vector3 = _rig.cab_eye_global()
 	model.queue_free()
