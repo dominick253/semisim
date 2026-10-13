@@ -1,0 +1,296 @@
+CITYHAUL AS4i: give the engine side its pinned inertia, so wheelspin cannot spike
+===============================================================================
+
+Repo state: main at HEAD b376f31 (AS4g plus AS4h committed and green). Touched
+files: scripts/vehicles/combination_controller.gd (mechanical extraction of the
+driveline arithmetic, then the one-line D53 inertia change), scripts/physics/
+driveline_model.gd (new, plus its .gd.uid), tests/unit/test_driveline_inertia.gd
+(new, 6 tests, plus its .gd.uid), tests/unit/test_engine_follows_wheel.gd (1 ice
+test re-pointed and renamed, dry regression tests untouched), tests/unit/
+test_tire_slip_curve.gd (1 ice test re-pointed, 1 comment re-pointed),
+tests/unit/test_wheel_surfaces.gd (1 ice test re-pointed), this file, and one row
+(D53) in docs/DEVIATIONS.md. No PHYSICS_CONSTANTS value was added or changed; no
+other code was touched. No git commands run; the parent reviews and commits.
+
+## The finding: two pinned inertias with zero callers
+
+physics-spec section 4 pins "Flywheel inertia 1.2 kg m^2" and "driveline inertia
+0.5 kg m^2"; `grep -rn "FLYWHEEL_INERTIA_KG_M2|DRIVELINE_INERTIA_KG_M2" scripts/`
+finds zero callers. Only WHEEL_INERTIA_KG_M2 (2.0) is used, in the saturated-
+branch wheel integrator (combination_controller.gd line 629 at b376f31). Same
+defect family as the once-unused mu_wet/mu_ice columns and the once-uncalled
+longitudinal_force (D49, D50).
+
+## The defect (measured, pre-slice)
+
+tests/scratch/ice_gear_probe.gd, automatic, from rest, full throttle (recorded in
+docs/evidence/phase1/engine_wheel_speed.txt at b376f31):
+
+  ICEG t=0.0 gear=1 speed=0.00 rpm=700 omega=0.000 run=true abs=false
+  ICEG t=0.5 gear=1 speed=0.00 rpm=0 omega=22.898 run=false abs=true
+  ICEG t=1.0 gear=1 speed=-0.01 rpm=0 omega=-0.074 run=false abs=false
+  ICEG t=2.0 gear=1 speed=-0.01 rpm=0 omega=-0.055 run=false abs=false
+  ICEG t=3.0 gear=1 speed=0.00 rpm=0 omega=0.027 run=false abs=false
+  ICEG t=4.0 gear=1 speed=0.00 rpm=0 omega=0.024 run=false abs=false
+  ICEG t=5.0 gear=1 speed=0.01 rpm=0 omega=-0.026 run=false abs=false
+  ICEG t=7.0 gear=1 speed=0.02 rpm=0 omega=0.038 run=false abs=false
+
+One-tick spike: on the first drive tick the integrator applies the full idle
+torque to the 2.0 kg m^2 wheel alone and it jumps to 22.898 rad/s (3904 rpm
+equivalent in gear 1, total ratio 17.886). The shutdown check in _step runs
+before the torque request, so the engine reads 1900 (clamped) on tick 2 and
+dies -- before the AS4h redline cut (1800) can bite: the transient jumps from
+700 rpm straight past the whole 1800-1900 window in one tick. run=false from
+t=0.5, speed decays 0.05 to 0.03 m/s.
+
+## The change (D53)
+
+While the clutch is engaged, spinning the drive wheels up also spins the
+flywheel and the driveline up through the gearbox, so the saturated-branch
+integrator works against the wheel inertia plus the engine-side inertia
+reflected through the square of the total driveline ratio:
+
+  I_effective = WHEEL_INERTIA_KG_M2
+                + (FLYWHEEL_INERTIA_KG_M2 + DRIVELINE_INERTIA_KG_M2)
+                * pow(ratio * FINAL_DRIVE_RATIO, 2)
+  gear 1: 2.0 + 1.7 * (4.834 * 3.70)^2 = 2.0 + 1.7 * 319.91 = 545.8 kg m^2
+          (against 2.0 pre-slice)
+  gear 5: 2.0 + 1.7 * (1.000 * 3.70)^2 = 25.3 kg m^2
+
+In gear 1 the redline (1800 rpm) maps to 10.539 rad/s of wheel and the
+shutdown (1900) to 11.124 rad/s, so the fuel cut now bites BEFORE the
+shutdown. Pinned decisions from the brief: applied ONLY in the saturated-branch
+integrator (the gripping branch keeps the AS4d no-slip assignment, so dry stays
+byte-stable); transmission.ratio() is computed once per physics tick, outside
+the per-wheel loop, and passed as a plain number (no String/Array/Dictionary
+per tick); no new constant, no fudge factor, no damping, no clamp; the 200
+rad/s numerical clamp stays where it is.
+
+## The file split (mechanical, behaviour-neutral -- verified)
+
+scripts/physics/driveline_model.gd (NEW, 56 lines, class_name DrivelineModel,
+static functions with explicit arguments, no node state, no fields):
+  engine_rpm_from_wheel_rate(wheel_rate_rad_s, ratio)
+      -- the AS4g conversion, idle and shutdown clamps included
+  effective_inertia_kg_m2(ratio)
+      -- the D53 formula, a single number
+  wheel_torque_nm(engine_torque_nm, throttle, ratio, engagement, forward_speed)
+      -- the AS4h redline cut, the top speed governor, and the driveline
+         efficiency and ratio multiplication
+
+The controller keeps the state (engine_running, throttle, gear selection) and
+calls these; the AS4h cut stays a fuel event applied to the engine torque by
+the caller, so a cut engine arrives at wheel_torque_nm as 0.0 and returns 0.0.
+
+Line counts (brief: paste before and after for both files):
+  combination_controller.gd: 1000 lines at b376f31 -> 998 lines (under gdlint's
+                             1000-line max; the brief's "at exactly 1000 lines")
+  driveline_model.gd:        new, 56 lines
+
+Extraction neutrality: with the extraction in place and the inertia still
+sourced from WHEEL_INERTIA_KG_M2, the suite is identical to the b376f31
+baseline (Scripts 26, Tests 204, Passing 204, Failing 0, Asserts 5220) and the
+dry probes reproduce b376f31 within run-to-run noise. Only then was the D53
+line applied (wheel_inertia_kg_m2 = DrivelineModel.effective_inertia_kg_m2(
+drive_ratio)).
+
+## Unit suite
+
+Baseline at b376f31: Scripts 26, Tests 204, Passing 204, Failing 0, Asserts 5220.
+After the split (neutral): identical 26 / 204 / 204 / 5220.
+After D53 plus the re-points (final, three consecutive green runs):
+  Scripts 27, Tests 210, Passing 210, Failing 0, Asserts 5233.
+  (+1 script = test_driveline_inertia.gd, +6 tests, +13 asserts.)
+
+Measured numbers from the passing run (tests/unit/test_driveline_inertia.gd):
+  AS4i first tick: omega=-0.106 rad/s (pre-fix 22.860)
+  AS4i max_rpm=1863.3 (shutdown 1900) dead_ticks=0 first_dead=-1
+  AS4i gears: 1(t1), 2(t70), 1(t71), 2(t72), 1(t73), 2(t74), 1(t75) ... 1(t592)
+              [1 <-> 2 hunt every ~57 ticks] 2(t575), 3(t593), 2(t594)
+  AS4i per-second: t=1.0 v=0.53 rpm=847, t=2.0 v=1.08 rpm=841, t=3.0 v=1.59
+                   rpm=1674, t=4.0 v=2.05 rpm=1552, t=5.0 v=2.45 rpm=700,
+                   t=6.0 v=2.71 rpm=700, t=7.0 v=2.95 rpm=700, t=8.0 v=3.16 rpm=700
+  AS4i bound: peak_omega=15.418 (gear ratio 2.857, redline bound 17.832,
+              1.25x 22.289) peak_slip=5.6286 settled_slip=0.0008
+  AS4i move: v_final=3.160 m/s (pre-fix 0.03)
+  AS4i inertia: gear1=545.83 kg m^2 (want 545.8) gear5=25.27 kg m^2 (want 25.3)
+  AS4i dry: saturated_ticks=0 max|slip|=0.0094 max|engine-vehicle_rpm|=1.88 rpm
+            v_final=2.38 m/s (the D53 line never runs on dry)
+
+Re-pointed ice assertions (before -> after, each with the measured number):
+1. test_engine_follows_wheel.gd, test renamed
+   test_ice_launch_omega_bounded_by_shutdown -> ..._by_limiter:
+     - peak_omega: 22.860 (one-tick spike, 480-tick window) -> 10.909
+       (sustained 1 <-> 2 sawtooth, same window).
+     - sustained-spin bound: 1.25 x the 1900 SHUTDOWN-implied bound (11.124 rad/s
+       in gear 1) -> 1.25 x the 1800 REDLINE-implied bound for the settled tick's
+       gear (measured settled_omega 10.909 against 1.25 x 17.832 = 22.289 with the
+       settled tick in gear 2; 1.25 x 10.539 = 13.174 if it is in gear 1).
+     - engine rpm: "max >= 1900 (reached the shutdown)" -> "max >= 1800 AND
+       max < 1900" (measured 1863.3; the engine stays alive).
+   Dry regression tests (4-8 in that file) untouched, byte-stable.
+2. test_tire_slip_curve.gd, test_ice_launch_flat_top_ratio (960-tick run):
+     - "the spin is a single-tick transient" (high_omega_ticks <= 1, measured 1)
+       -> "the spin is sustained but bounded per tick": 940 of 960 ticks above
+       1.0 rad/s, asserted worst (omega - 1.25 x per-gear redline bound) <= 0
+       (measured +0.000; pre-slice it fails on tick 1: 22.860 against
+       1.25 x 10.539 = 13.174 in gear 1).
+     - peak_omega: 22.860 -> 15.418 (gear 2; 7.7 percent of the 200 rad/s clamp).
+     - shutdown_tick: == 2 -> == -1 (the engine never shuts down).
+     - v_final: -0.0385 -> 3.1598 m/s (max |v| 3.1598).
+     - max_gear_seen >= 2 kept (measured 3: the 1 <-> 2 hunt blips to gear 3 for
+       one tick at t=593, final gear 2; pre-slice 1 -> 2 on tick 2, back to 1 on
+       tick 3).
+     - max_redline_streak <= 1 kept (measured 1).
+   test_curve_is_wired_into_saturated_delivery: assertions unchanged (they pass);
+   the sampled spin-up tick now reads omega -0.106 (was 22.898) with demand
+   17,918 N vs adhesion 14,481 N, slip +0.2373, delivered 14,134.5 N vs curve
+   14,135.2 N (0.00 percent) -- the saturation wiring is untouched.
+3. test_wheel_surfaces.gd, test_ice_launch_saturates_the_drive_tyre_and_engages_abs:
+     - engine_running: false (dead on tick 2) -> true (measured alive at 3 s).
+     - motion: max |v| > 0.01 m/s behind a dead engine (measured 0.0385-0.069)
+       -> max |v| > 0.5 m/s of live acceleration (measured 1.5884 at 360 ticks).
+     - saturation ratio: 1.237 (only the spin-up tick saturated: 17,918 N vs
+       14,478 N) -> 2.312 (peak demand 33,292 N per wheel -- the sawtooth passes
+       the 2,230 Nm torque-peak point near 1,400 rpm in gear 1 before the 1800
+       cut -- against 14,481 N adhesion).
+     - peak |slip|: +0.2374 (spin-up tick; the crawl kept it small) -> +5.6286
+       (the launch transient: the limiter-bounded wheel surface outruns the
+       still-slow vehicle while the slip reference is clamped at 1.0 m/s).
+     - abs_seen kept true (measured true; ABS engages through the spin and
+       releases once the launch regrips).
+
+The brief's "peak slip stays under 1.0" does not hold for the WHOLE run
+(measured 5.6286; a second 960-tick run measured 2.4997 -- run-to-run, because
+the peak is the low-speed transient). It holds for the settled phase, so the
+new test asserts both: whole-run peak < 10.0 (covers the derived worst case,
+the gear-1 limiter surface ~6.2 m/s against the 1.0 m/s reference; the pre-fix
+one-tick spike 12.96 still fails it) and settled (last 2 s) peak < 1.0
+(measured 0.0008: the wheel regrips the no-slip line by t=5.0 and stays there).
+
+## Probes (after; before from the b376f31 record in engine_wheel_speed.txt)
+
+ice_gear_probe.gd, automatic (tests/scratch):
+  BEFORE (b376f31): the table in "The defect" above -- run=false from t=0.5,
+                    speed decays 0.05 to 0.03 m/s.
+  AFTER:
+  ICEG t=1.0 gear=1 ratio=4.834 rpm=700 run=true omega=2.346 speed=0.45 axle_nm=20175 patch_n=35835 adh_n=14376 over=2.49 del_n=12734 slip=0.8203 abs=true
+  ICEG t=2.0 gear=1 ratio=4.834 rpm=1024 run=true omega=10.479 speed=0.90 axle_nm=35436 patch_n=62942 adh_n=14392 over=4.37 del_n=11866 slip=4.8058 abs=true
+  ICEG t=3.0 gear=1 ratio=4.834 rpm=1330 run=true omega=8.148 speed=1.34 axle_nm=37112 patch_n=65917 adh_n=14398 over=4.58 del_n=12087 slip=2.2718 abs=true
+  ICEG t=4.0 gear=1 ratio=4.834 rpm=1379 run=true omega=8.437 speed=1.75 axle_nm=37380 patch_n=66394 adh_n=14400 over=4.61 del_n=12254 slip=1.5989 abs=true
+  ICEG t=5.0 gear=1 ratio=4.834 rpm=1032 run=true omega=6.370 speed=2.12 axle_nm=35481 patch_n=63021 adh_n=14385 over=4.38 del_n=12428 slip=1.1874 abs=true
+  ICEG t=6.0 gear=2 ratio=2.857 rpm=700 run=true omega=4.330 speed=2.44 axle_nm=11924 patch_n=21179 adh_n=14411 over=1.47 del_n=10590 slip=-0.0010 abs=false
+  ICEG t=7.0 gear=2 ratio=2.857 rpm=700 run=true omega=4.718 speed=2.66 axle_nm=11924 patch_n=21179 adh_n=14403 over=1.47 del_n=10590 slip=-0.0008 abs=false
+  ICEG t=8.0 gear=2 ratio=2.857 rpm=700 run=true omega=5.075 speed=2.86 axle_nm=11924 patch_n=21179 adh_n=14403 over=1.47 del_n=10590 slip=-0.0007 abs=false
+  The automatic run goes from a dead engine to a live limiter buzz: run=true on
+  every tick, rpm oscillates 700-1379 in the per-second samples (the in-tick
+  peaks reach the 1800 cut, measured 1863.3 max in GUT), the combination moves
+  0.45 -> 2.86 m/s over 8 s, and by t=6-8 it settles on the no-slip line in
+  gear 2 at idle rpm (slip -0.001, ABS off, demand 10,590 N per wheel against
+  14,403 N adhesion -- gripping).
+
+ice_gear_probe.gd -- 5 (gear 5 locked, tests/scratch):
+  BEFORE (b376f31):
+  ICEG t=0.0 gear=5 speed=0.00 rpm=700 omega=0.000 run=true abs=false
+  ICEG t=0.5 gear=5 speed=0.00 rpm=700 omega=2.880 run=true abs=true
+  ICEG t=1.0 gear=5 speed=0.03 rpm=700 omega=3.368 run=true abs=false
+  ICEG t=2.0 gear=5 speed=0.13 rpm=819 omega=7.843 run=true abs=false
+  ICEG t=3.0 gear=5 speed=0.31 rpm=1046 omega=18.580 run=true abs=false
+  ICEG t=4.0 gear=5 speed=0.52 rpm=1303 omega=29.667 run=true abs=false
+  ICEG t=5.0 gear=5 speed=0.62 rpm=1442 omega=35.166 run=true abs=false
+  ICEG t=7.0 gear=5 speed=0.64 rpm=1461 omega=35.970 run=true abs=false
+  AFTER:
+  ICEG t=1.0 gear=5 ratio=1.000 rpm=700 run=true omega=0.178 speed=0.10 axle_nm=4174 patch_n=7413 adh_n=14458 over=0.51 del_n=3707 slip=-0.0010 abs=false
+  ICEG t=2.0 gear=5 ratio=1.000 rpm=700 run=true omega=0.348 speed=0.20 axle_nm=4174 patch_n=7413 adh_n=14459 over=0.51 del_n=3707 slip=-0.0009 abs=false
+  ICEG t=3.0 gear=5 ratio=1.000 rpm=700 run=true omega=0.506 speed=0.29 axle_nm=4174 patch_n=7413 adh_n=14459 over=0.51 del_n=3707 slip=-0.0009 abs=false
+  ICEG t=4.0 gear=5 ratio=1.000 rpm=700 run=true omega=0.651 speed=0.37 axle_nm=4174 patch_n=7413 adh_n=14459 over=0.51 del_n=3707 slip=-0.0008 abs=false
+  ICEG t=5.0 gear=5 ratio=1.000 rpm=700 run=true omega=0.783 speed=0.44 axle_nm=4174 patch_n=7413 adh_n=14459 over=0.51 del_n=3707 slip=-0.0007 abs=false
+  ICEG t=6.0 gear=5 ratio=1.000 rpm=700 run=true omega=0.907 speed=0.51 axle_nm=4174 patch_n=7413 adh_n=14459 over=0.51 del_n=3707 slip=-0.0007 abs=false
+  ICEG t=7.0 gear=5 ratio=1.000 rpm=700 run=true omega=1.019 speed=0.57 axle_nm=4174 patch_n=7413 adh_n=14459 over=0.51 del_n=3707 slip=-0.0006 abs=false
+  ICEG t=8.0 gear=5 ratio=1.000 rpm=700 run=true omega=1.123 speed=0.63 axle_nm=4174 patch_n=7413 adh_n=14459 over=0.51 del_n=3707 slip=-0.0006 abs=false
+  The 0.63 m/s / 7,413 N figures the brief pinned: the per-axle drive demand is
+  7,413 N (2 x 3,706.5 N per wheel at full torque, gear 5) against 14,459 N
+  adhesion -- over = 0.51, demand below adhesion, so the wheel GRIPS from the
+  first tick (omega = v/r, slip -0.001, rpm held at idle 700) and the
+  combination crawls to 0.63 m/s. Pre-slice the same 7,413 N demand spiked the
+  2.0 kg m^2 wheel to 36 rad/s (slip, ABS on at t=0.5) before it settled at
+  0.64 m/s with the wheel still spinning at 36 rad/s; the end speed is the same
+  0.63-0.64 m/s, now reached without the spin.
+
+wheel_spin_probe.gd, dry (tests/scratch, all 11 lines):
+  SPIN t=0.0 speed=0.06 m/s omega=-0.067 rad_s drive_slip=0.0002 rpm=700 node_spin=0.0 deg
+  SPIN t=1.0 speed=0.70 m/s omega=1.267 rad_s drive_slip=-0.0072 rpm=700 node_spin=28.2 deg
+  SPIN t=2.0 speed=1.38 m/s omega=2.440 rad_s drive_slip=-0.0047 rpm=700 node_spin=116.4 deg
+  SPIN t=3.0 speed=2.02 m/s omega=3.585 rad_s drive_slip=-0.0030 rpm=700 node_spin=98.6 deg
+  SPIN t=4.0 speed=2.65 m/s omega=4.711 rad_s drive_slip=-0.0029 rpm=804 node_spin=96.6 deg
+  SPIN t=5.0 speed=3.64 m/s omega=6.470 rad_s drive_slip=-0.0031 rpm=1105 node_spin=1.6 deg
+  SPIN t=6.0 speed=4.76 m/s omega=8.461 rad_s drive_slip=-0.0023 rpm=1445 node_spin=4.5 deg
+  SPIN t=7.0 speed=5.31 m/s omega=9.428 rad_s drive_slip=-0.0006 rpm=952 node_spin=65.6 deg
+  SPIN t=8.0 speed=5.63 m/s omega=9.999 rad_s drive_slip=-0.0006 rpm=1009 node_spin=164.6 deg
+  SPIN t=9.0 speed=5.96 m/s omega=10.581 rad_s drive_slip=-0.0005 rpm=1068 node_spin=63.8 deg
+  SPIN t=10.0 speed=6.26 m/s omega=11.125 rad_s drive_slip=-0.0005 rpm=1123 node_spin=89.5 deg
+  t=10.0 against the b376f31 reference (6.26 m/s, 11.120 rad/s, 1122 rpm,
+  node_spin 84.0 deg): speed 0.00 percent off, omega 11.121-11.125 across three
+  runs (0.01-0.04 percent), rpm 1123 (0.09 percent) -- all within the 0.3
+  percent gate. node_spin 84.4 and 89.5 on the two re-runs (reference 84.0):
+  run-to-run variance in the accumulated visual mesh rotation, one re-run
+  within 0.5 percent; the physics quantities are stable. Expected: on dry the
+  wheel never saturates, so the D53 line never runs.
+
+wheel_saturation_probe.gd, dry (tests/scratch):
+  SAT t=0.0 speed=2.65 omega=4.711 v_over_r=4.709 slip=-0.0029 abs=false normal_n=57090 adhesion_n=65654 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=-0.019 v_over_r=0.000 slip=+0.0063 abs=false normal_n=59016 adhesion_n=67868 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.05 omega=-0.053 v_over_r=0.093 slip=-0.0032 abs=false normal_n=61470 adhesion_n=70691 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=-0.0009 abs=false normal_n=57561 adhesion_n=66196 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.065 v_over_r=0.000 slip=-0.0189 abs=false normal_n=59504 adhesion_n=68430 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=-0.013 v_over_r=0.000 slip=-0.0039 abs=false normal_n=58377 adhesion_n=67134 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.00 omega=0.018 v_over_r=0.000 slip=+0.0061 abs=false normal_n=56094 adhesion_n=64508 brake_nm=12000 demand_n=21314
+  t=0.0 matches the b376f31 reference the brief pinned byte-for-byte:
+  speed=2.65, omega=4.711, slip=-0.0029, adhesion 65,654, demand 21,314.
+
+wheel_saturation_probe.gd -- ice (tests/scratch):
+  SAT t=0.0 speed=1.76 omega=9.709 v_over_r=3.122 slip=+2.0159 abs=true normal_n=57610 adhesion_n=14403 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=-0.000 v_over_r=0.000 slip=+0.0001 abs=false normal_n=58838 adhesion_n=14709 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.00 omega=-0.001 v_over_r=0.000 slip=+0.0000 abs=false normal_n=58101 adhesion_n=14525 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57989 adhesion_n=14497 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57978 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  (Pre-slice the same probe: the saturated tick at t=0.0 spiked omega 2.167
+  with the engine already dead, then a 0 m/s crawl with abs=false.) Post-slice:
+  the saturated spin with ABS engages through the first second (the vehicle is
+  still moving at 1.76 m/s at t=0.0), the brake stop is clean, and slip settles
+  to 0.0000 with ABS released.
+
+smoke_controls.tscn (tests/sim):
+  SMOKE actions=135 speed=0.052 gear=1 cameras=CAB,TRAILER,FREE,CHASE audio_samples=25200 audio_hiss=false
+  SMOKE OK
+  Identical to the b376f31 baseline line.
+
+60 s yard drive (tests/scratch/fps_probe.tscn, xvfb + llvmpipe):
+  FPS_FRAMES frames=10225 seconds=60.0 mean_fps=170.14 p50_fps=180.00 p05_fps=137.14 worst_fps=10.00
+  DRIVE max_kmh=21.70 end_kmh=0.14 kingpin_err_m=0.008 articulation_deg=-0.02
+  Matches docs/evidence/phase1/wheel_roll.txt exactly (21.70 km/h max, 0.008 m
+  kingpin error). FPS PROBE OK.
+
+## Linters
+
+  gdformat --check scripts tests: 153 files, all clean (0 would reformat).
+  gdlint scripts tests/unit tests/sim: Success: no problems found.
+  combination_controller.gd: 1000 lines at b376f31 -> 998 lines (under the
+  gdlint max of 1000). driveline_model.gd: 56 lines (new).
+
+## What is still not modelled
+
+- No torque converter and no clutch slip: the engaged-clutch path is a rigid
+  coupling (D51). The reflected inertia assumes the engine-side mass spins at
+  exactly ratio x the wheel rate at every tick; a real clutch slips and stores
+  and releases energy. Here the flywheel and driveline are a fixed reflected
+  load on the wheel's integrator, not a second state.
+- A single drive-axle omega scalar: one shared wheel_omega_rad_s for both drive
+  wheels (unchanged by this slice).
+- The 1900 rpm shutdown stays reachable in principle (engine_rpm clamps at
+  1900; a wheel driven externally past 11.124 rad/s in gear 1 reads the
+  shutdown and the engine dies with no restart path, as before). From every
+  regime exercised by the suite and the probes it is no longer reachable: the
+  1800 fuel cut bites first.

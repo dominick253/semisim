@@ -16,12 +16,13 @@ extends GutTest
 ##   2. The surface comes from what the suspension ray actually hits
 ##      (contact-based, not a global switch), and returns to dry when the
 ##      tagged ground is replaced by an untagged one.
-##   3. On ice the drive tyre saturates (peak demand/adhesion 1.24, peak slip
-##      +0.2374) and engages ABS. (AS4h re-point: the bounded launch's one-tick
-##      spin-up transient then drags the engine through the redline window to
-##      the 1900 rpm shutdown on tick 2 and the combination crawls; the old
-##      1 m/s speed and omega-over-noslip assertions were the pre-AS4g
-##      runaway and are replaced with measured values.)
+##   3. On ice the drive tyre saturates (peak demand/adhesion 2.31, peak slip
+##      +5.63 in the launch transient) and engages ABS. (AS4i re-point: the
+##      bounded launch no longer kills the engine -- the D53 reflected
+##      engine-side inertia removes the one-tick 22.898 rad/s spike that drove
+##      the engine to the 1900 rpm shutdown on tick 2; the engine stays alive
+##      and the combination moves to 1.59 m/s at 3 s. The old crawl assertions
+##      were replaced with measured values.)
 ##   4. On dry the same launch never engages ABS and stays on the no-slip
 ##      line, so the AS4d behaviour is untouched.
 ##   5. An unknown surface name falls back to mu_dry without crashing.
@@ -221,22 +222,24 @@ func test_ice_launch_saturates_the_drive_tyre_and_engages_abs() -> void:
 	await _harness.settle(180)
 	var m: Dictionary = await _launch(_harness.controller, LAUNCH_TICKS)
 	var c: Node = _harness.controller
-	# AS4h re-point. The launch still saturates (peak demand/adhesion 1.24:
-	# 17,917 N per wheel against 14,478 N adhesion on the spin-up tick, peak
-	# slip +0.2374) and still engages ABS. What the bounded launch does after
-	# that spin-up tick is different from the pre-AS4g premise: the wheel
-	# spikes to 22.898 rad/s for exactly one tick, the engine reads that on
-	# tick 2, clamps to the 1900 rpm shutdown and dies, and the combination
-	# crawls (speed 0.069 m/s at 1 s, 0.0228 m/s at 8 s). So:
-	#   - the old "v_final > 1 m/s" assertion (the runaway launch) is replaced
-	#     with "the launch moved the combination forward" (measured 0.0333 m/s
-	#     at 360 ticks);
-	#   - the old "omega exceeded v/r by 10 percent" assertion is replaced with
-	#     the peak slip, because its v > 0.3 m/s sampling gate never opens in
-	#     this regime (max speed 0.069 m/s), so the ratio is structurally 0.0;
-	#   - the measured reality that the one-tick transient overshoots the whole
-	#     1800-1900 redline window and still reaches the 1900 rpm shutdown on
-	#     tick 2 is asserted below (rule: report, don't change the shutdown).
+	# AS4i re-point (the AS4h re-point's premise is now the old story). The
+	# launch still saturates (peak demand/adhesion 2.31: the spin-up tick is
+	# 17,918 N per wheel against 14,481 N adhesion, and the sustained sawtooth
+	# keeps the demand above adhesion for the first ~1 s) and still engages
+	# ABS. What the launch does after that spin-up tick changed with D53: the
+	# one-tick 22.898 rad/s spike (engine dead on tick 2, 0.02-0.07 m/s crawl)
+	# is gone -- the reflected engine-side inertia bounds the spin-up, the
+	# engine survives (measured running=true at 3 s) and the combination
+	# accelerates to 1.59 m/s at 3 s. So:
+	#   - "the launch moved the combination" is now a real motion bound
+	#     (measured 1.5884 m/s at 360 ticks; asserted > 0.5 m/s);
+	#   - the peak slip is the launch transient (measured +5.63: the
+	#     limiter-bounded wheel surface outruns the still-slow vehicle while
+	#     the slip reference is clamped at 1.0 m/s; pre-AS4i the same measure
+	#     was +0.2374 on the spin-up tick, the engine died and the crawl kept
+	#     it small);
+	#   - the engine is asserted ALIVE at the end of the launch (pre-AS4i:
+	#     dead on tick 2).
 	print(
 		(
 			(
@@ -270,10 +273,9 @@ func test_ice_launch_saturates_the_drive_tyre_and_engages_abs() -> void:
 		0.15,
 		(
 			(
-				"ice: the wheel never spun past v/r (peak |slip| %.4f; the spin-up tick itself "
-				+ "measured +0.2373, and the crawl ticks after the engine dies make the peak "
-				+ "|slip| even larger as v passes through zero; the old omega-over-noslip metric "
-				+ "is 0 here because its v > 0.3 m/s gate never opens)"
+				"ice: the wheel never spun past v/r (peak |slip| %.4f; the launch transient "
+				+ "measured +5.63, where the limiter-bounded wheel surface outruns the "
+				+ "still-slow vehicle; pre-AS4i the peak was +0.2374 on the spin-up tick)"
 			)
 			% m.max_slip
 		)
@@ -288,24 +290,30 @@ func test_ice_launch_saturates_the_drive_tyre_and_engages_abs() -> void:
 			% [m.max_slip, m.max_demand, m.max_adhesion]
 		)
 	)
-	# After the engine dies on tick 2 the combination crawls, and the crawl
-	# direction follows the rest-settle drift phase (measured: +0.069 m/s
-	# forward in the probe run, -0.0385 m/s in the GUT run), so the motion
-	# measure is the peak speed magnitude, not the signed final sample.
+	# AS4i re-point (was "the launch moved the combination, max |v| > 0.01 m/s
+	# behind a dead engine"): the launch is a live acceleration now (measured
+	# 1.5884 m/s at 360 ticks, 3 s); asserted > 0.5 m/s.
 	assert_gt(
 		m.max_abs_v,
-		0.01,
+		0.5,
 		(
-			"ice: launch did not move the combination (max |v| %.4f m/s, measured 0.0385-0.069)"
+			(
+				"ice: launch did not move the combination (max |v| %.4f m/s, measured 1.5884 at "
+				+ "360 ticks)"
+			)
 			% m.max_abs_v
 		)
 	)
-	assert_false(
+	# AS4i re-point (was "engine dead on tick 2, reported per brief rule 3"):
+	# the one-tick transient that drove the engine through the 1800-1900
+	# window is gone (D53 reflected engine-side inertia), so the engine is
+	# alive at the end of the launch (measured running=true; pre-AS4i
+	# dead on tick 2, no restart path).
+	assert_true(
 		c.engine_running,
 		(
-			"ice: engine still running after the launch (measured dead on tick 2: the one-tick "
-			+ "transient jumps 700 rpm -> 1900 rpm, through the whole redline window the AS4h cut "
-			+ "sits in; the combination keeps crawling instead of running away)"
+			"ice: engine not running after the launch (pre-AS4i the one-tick 22.898 rad/s "
+			+ "transient shut it down on tick 2; the D53 fix removes the transient)"
 		)
 	)
 	await _free_harness()

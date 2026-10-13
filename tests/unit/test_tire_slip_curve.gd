@@ -22,11 +22,14 @@ extends GutTest
 ##      curve at the sampled slip within 2 percent. (AS4h re-point: the AS4g
 ##      bounded launch settles with the engine dead and zero drive demand, so
 ##      the sample point moved from the settled state to the spin-up tick.)
-##   3. (measurement, AS4h re-point) the bounded ice launch: one-tick startup
-##      transient to 22.898 rad/s (never the 200 rad/s clamp), engine rpm above
-##      the redline for at most one tick, and the one-tick overshoot of the
-##      1800-1900 window still reaches the 1900 rpm shutdown on tick 2 (the
-##      AS4h limiter cannot intervene there; reported, not changed).
+##   3. (measurement, AS4i re-point) the bounded ice launch: no one-tick
+##      spike (the D53 reflected engine-side inertia removes it), the spin is
+##      a sustained bounded sawtooth (940 of 960 ticks above 1.0 rad/s) with
+##      every tick at or below 1.25 x the redline-implied bound for its gear
+##      (peak omega 15.418 in gear 2 against 1.25 x 17.832 = 22.289), the
+##      engine never shuts down (pre-AS4i: shutdown tick 2 from the 22.898
+##      rad/s spike), and the combination ends at 3.16 m/s (pre-AS4i: a
+##      0.02-0.07 m/s crawl with the engine dead).
 ##   4. ABS releases once slip drops below ABS_RELEASE_SLIP after an ice stop.
 ##      Fails while the release check is trapped in the saturated branch.
 ##   5. Dry is unchanged: no ABS, slip stays under 0.05, speed 6.0-6.5 m/s.
@@ -175,14 +178,13 @@ func test_curve_is_wired_into_saturated_delivery() -> void:
 	_harness = await _make_harness()
 	var drive: WheelRig = await _ice_drive_wheel()
 	var c: Node = _harness.controller
-	# AS4h re-point (old premise: "the spin settles at the clamp"). AS4g bounded
-	# the spin and then shut the engine down on the one-tick startup transient,
-	# so the SETTLED state has no drive demand at all (measured |demand| 0 N,
-	# delivered 0 N) and the old sample point is dead. The saturated branch is
-	# exercised DURING the spin-up instead: the first drive tick is saturated
-	# (measured demand 17,917 N per wheel against 14,478 N adhesion, slip
-	# +0.2374, delivered 14,134 N, omega 22.898 rad/s) before the engine is
-	# dragged to the 1900 rpm shutdown on tick 2.
+	# AS4i re-point of the AS4h comment. The spin-up tick is still the sampling
+	# point (the first drive tick is saturated: measured demand 17,918 N per
+	# wheel against 14,481 N adhesion, slip +0.2373, delivered 14,134.5 N).
+	# What moved: the omega at that tick is now -0.106 rad/s (the rest-settle
+	# drift, no spike -- D53), and the spin continues as a bounded sawtooth
+	# with the engine alive (pre-AS4i: omega 22.898 on this tick, engine dead
+	# on tick 2).
 	c.throttle = 1.0
 	c.brake_pedal = 0.0
 	var radius: float = drive.rolling_radius()
@@ -262,25 +264,23 @@ func test_ice_launch_flat_top_ratio() -> void:
 	_harness = await _make_harness()
 	var drive: WheelRig = await _ice_drive_wheel()
 	var c: Node = _harness.controller
-	# AS4h re-point (old premise: "peak_omega > 199, the spin pins to the 200
-	# rad/s clamp"). The AS4g bound held and the 200 rad/s clamp was never
-	# reached again. What the bounded launch actually does: the one-tick
-	# startup transient spikes the low-inertia wheel to 22.898 rad/s (equivalent
-	# 3904 rpm in gear 1) on tick 1, the engine reads that on tick 2, clamps to
-	# the 1900 rpm shutdown and dies, and the wheel decays. The AS4h redline
-	# fuel cut (1800) cannot intervene: the transient jumps from 700 rpm straight
-	# past the whole 1800-1900 window in one tick. The limiter-implied bound for
-	# the gear is 1800 rpm / (4.834 x 3.70) = 10.539 rad/s; 1.5 x that is 15.808,
-	# and the one-tick transient (22.898) exceeds even the generous bound, so the
-	# bound asserted here is the one that actually holds: the spin is a single
-	# tick, never sustained, and the engine rpm is above the redline for at most
-	# one tick (DEVIATIONS: the shutdown stays reachable from this one regime).
+	# AS4i re-point (the AS4h re-point's premise is now the old story). Pre-AS4i:
+	# the one-tick startup transient spiked the low-inertia wheel to 22.898 rad/s
+	# on tick 1, the engine read 1900 on tick 2 and died, and the spin was "one
+	# tick only" by death. Post-AS4i (D53): the spike is gone, the spin is a
+	# SUSTAINED bounded sawtooth (940 of 960 ticks above 1.0 rad/s), bounded by
+	# the 1800 rpm fuel cut through the per-gear redline-implied omega bound
+	# (1800 x 2*PI/60 / (gear x final drive)). The asserted bound is 1.25 x that
+	# bound per tick at the gear of the tick: it holds because the auto upshift
+	# (1550 rpm) always fires at 1.161 x the redline bound of the same gear,
+	# below the 1.25 x margin, and the cut fires at the bound itself.
 	c.throttle = 1.0
 	c.brake_pedal = 0.0
 	var peak_omega: float = 0.0
 	var peak_slip: float = 0.0
 	var peak_gear: int = 0
 	var high_omega_ticks: int = 0
+	var worst_omega_over_bound: float = 0.0
 	var redline_streak: int = 0
 	var max_redline_streak: int = 0
 	var shutdown_tick: int = -1
@@ -298,6 +298,12 @@ func test_ice_launch_flat_top_ratio() -> void:
 			peak_gear = c.transmission.gear
 		if omega > 1.0:
 			high_omega_ticks += 1
+			var ratio: float = c.transmission.ratio()
+			var bound: float = (
+				(PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM * 2.0 * PI / 60.0)
+				/ (ratio * PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO)
+			)
+			worst_omega_over_bound = maxf(worst_omega_over_bound, omega - 1.25 * bound)
 		var g: int = c.transmission.gear
 		if g > max_gear_seen:
 			max_gear_seen = g
@@ -315,21 +321,17 @@ func test_ice_launch_flat_top_ratio() -> void:
 			shutdown_tick = _i + 1
 		v_final = c.speed()
 		max_abs_v = maxf(max_abs_v, absf(v_final))
-	var redline_omega_gear1: float = (
-		(PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM * 2.0 * PI / 60.0)
-		/ (4.834 * PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO)
-	)
 	print(
 		(
 			(
-				"AS4f flat top (re-pointed): peak_omega=%.3f (one-tick; redline omega gear1=%.3f, "
-				+ "1.5x=%.3f) peak_slip=%+.4f gear=%d high_omega_ticks=%d max_redline_streak=%d "
-				+ "shutdown_tick=%d v_final=%.4f max_gear=%d upshift_tick=%d back_to_1_tick=%d final_gear=%d"
+				"AS4f flat top (AS4i re-pointed): peak_omega=%.3f (sustained sawtooth; worst "
+				+ "omega - 1.25x redline bound over any tick = %+.3f) peak_slip=%+.4f gear=%d "
+				+ "high_omega_ticks=%d max_redline_streak=%d shutdown_tick=%d v_final=%.4f "
+				+ "max_gear=%d upshift_tick=%d back_to_1_tick=%d final_gear=%d"
 			)
 			% [
 				peak_omega,
-				redline_omega_gear1,
-				1.5 * redline_omega_gear1,
+				worst_omega_over_bound,
 				peak_slip,
 				peak_gear,
 				high_omega_ticks,
@@ -344,25 +346,32 @@ func test_ice_launch_flat_top_ratio() -> void:
 		)
 	)
 	# The runaway is gone: the wheel never reaches the 200 rad/s integrator
-	# clamp (measured peak 22.898, 11 percent of the clamp).
+	# clamp (measured peak 15.418, 7.7 percent of the clamp; pre-AS4i 22.898).
 	assert_lt(
 		peak_omega,
 		200.0,
 		"AS4f: peak omega %.3f rad/s reached the 200.0 clamp (runaway not bounded)" % peak_omega
 	)
-	# The spin is a single-tick transient, not a sustained spin (measured:
-	# exactly one tick above 1.0 rad/s).
+	# AS4i re-point (was "the spin is a single-tick transient, high_omega_ticks
+	# <= 1"): post-D53 the spin is sustained (measured 940 of 960 ticks above
+	# 1.0 rad/s) but every tick stays at or below 1.25 x the redline-implied
+	# bound for its own gear. Pre-AS4i this fails on tick 1 (22.860 against
+	# 1.25 x 10.539 = 13.174 in gear 1).
 	assert_lte(
-		high_omega_ticks,
-		1,
+		worst_omega_over_bound,
+		0.0,
 		(
-			"AS4f: omega stayed above 1.0 rad/s for %d ticks (sustained spin, measured 1)"
-			% high_omega_ticks
+			(
+				"AS4f: omega exceeded 1.25 x the per-gear redline bound by %+.3f rad/s on some tick "
+				+ "(the limiter is not the binding bound)"
+			)
+			% worst_omega_over_bound
 		)
 	)
 	# The engine rpm is above the redline for at most one tick (measured: 1,
-	# the clamped 1900 on tick 2). A sustained redline-band spin is exactly
-	# what the AS4h limiter removes (see test_engine_follows_wheel).
+	# the cut re-arms the tick the rpm falls back below the redline). A
+	# sustained redline-band spin is exactly what the AS4h limiter removes
+	# (see test_engine_follows_wheel).
 	assert_lte(
 		max_redline_streak,
 		1,
@@ -371,34 +380,34 @@ func test_ice_launch_flat_top_ratio() -> void:
 			% [PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM, max_redline_streak]
 		)
 	)
-	# The transient also upshifts the transmission out of gear 1 (measured
-	# sequence 1 -> 2 on tick 2, back to 1 on tick 3, gear 1 for the rest):
-	# the engine reading 1900 rpm on tick 2 crosses the 1550 upshift point.
+	# The launch upshifts the transmission out of gear 1 (measured max gear 3:
+	# the gearbox hunts 1 <-> 2 for the first ~5 s (up at 1550 rpm, down at
+	# 1150 rpm) and blips to gear 3 for one tick at t=593 before returning to
+	# gear 2; pre-AS4i the sequence was 1 -> 2 on tick 2, back to 1 on tick
+	# 3, gear 1 for the rest).
 	assert_gte(
 		max_gear_seen,
 		2,
 		(
 			(
-				"AS4f: the transmission never left gear 1 during the launch (max gear %d, upshift tick %d; "
-				+ "measured 1 -> 2 on tick 2, back to 1 on tick 3)"
+				"AS4f: the transmission never left gear 1 during the launch (max gear %d, upshift "
+				+ "tick %d; measured max 3, first upshift tick 1)"
 			)
 			. format([max_gear_seen, upshift_tick])
 		)
 	)
-	# Measured reality of this regime (DEVIATIONS, rule: report, don't change
-	# the shutdown): the one-tick transient overshoots the 1800-1900 window, so
-	# the shutdown is still reachable from rest in gear 1 and the engine dies on
-	# tick 2. The launch still moved the combination: after the engine dies
-	# the crawl direction follows the rest-settle drift phase (measured
-	# +0.069 m/s in the probe run, -0.023 to -0.039 m/s in GUT runs), so the
-	# motion measure is the peak speed magnitude, not the signed final sample.
+	# AS4i re-point (was "shutdown_tick == 2, reported per brief rule 3"): the
+	# one-tick transient that drove the engine through the 1800-1900 window is
+	# gone (D53), so the engine never shuts down (measured shutdown_tick -1)
+	# and the launch moves the combination to 3.16 m/s (pre-AS4i: a 0.02-0.07
+	# m/s crawl behind a dead engine).
 	assert_eq(
 		shutdown_tick,
-		2,
+		-1,
 		(
 			(
-				"AS4f: engine shutdown at tick %d, measured tick 2 (one-tick transient through the "
-				+ "redline window; the AS4h cut re-arms only when rpm falls back below the redline)"
+				"AS4f: engine shut down at tick %d; pre-AS4i the one-tick transient shut it down "
+				+ "at tick 2, the D53 fix removes the transient"
 			)
 			% shutdown_tick
 		)
@@ -407,7 +416,7 @@ func test_ice_launch_flat_top_ratio() -> void:
 		max_abs_v,
 		0.01,
 		(
-			"AS4f: the launch did not move the combination (max |v| %.4f m/s, measured 0.023-0.069)"
+			"AS4f: the launch did not move the combination (max |v| %.4f m/s, measured 3.16)"
 			% max_abs_v
 		)
 	)

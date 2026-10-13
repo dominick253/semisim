@@ -20,24 +20,33 @@ extends GutTest
 ## fudge factor; no PHYSICS_CONSTANTS value changes; the gripping branch and the
 ## AS4f curve are untouched.
 ##
-## Measured behaviour (post-fix, derived with a probe, not hand-computed):
-##   * The one-tick-lag startup transient spikes the low-inertia wheel to ~22.9
-##     rad/s on the FIRST drive tick (the engine reads the previous tick's wheel
-##     speed, so tick 1 applies full idle torque and the wheel jumps ~23 rad/s
-##     before the engine can react). The engine then reads omega 22.9 -> 1900 rpm
-##     and shuts down on tick 2, so the wheel decays back to ~0.
-##   * On ice the vehicle sits at ~0.03-0.07 m/s (idle rpm) for the whole launch,
-##     so the 1900 rpm SHUTDOWN is the binding bound, not a torque-curve
-##     equilibrium at the gear-1 shutdown-implied 11.12 rad/s.
-##   * Dry is byte-identical to AS4f: the wheel is never faster than the road, so
-##     engine_rpm == the vehicle-speed rpm and the spin probe is unchanged.
+## Measured behaviour (post-AS4i, derived with a probe, not hand-computed):
+##   * The one-tick-lag startup transient that spiked the low-inertia wheel to
+##     ~22.9 rad/s on the FIRST drive tick (engine reads the previous tick's
+##     wheel speed, tick 1 applies full idle torque, wheel jumps ~23 rad/s,
+##     engine reads 1900 rpm on tick 2, shutdown) is gone: AS4i (D53) makes the
+##     saturated integrator work against the wheel inertia plus the pinned
+##     flywheel (1.2) and driveline (0.5) inertia reflected through the total
+##     ratio (545.8 kg m^2 in gear 1), so the first tick moves the wheel
+##     -0.106 rad/s (test_driveline_inertia.gd).
+##   * On ice the launch is now a bounded sawtooth: the wheel spins up in
+##     gear 1, the 1800 rpm fuel cut bites (max engine rpm measured 1863,
+##     below the 1900 shutdown), the gearbox hunts 1 <-> 2 (up at 1550 rpm,
+##     down at 1150 rpm, no-lug guard), and the combination ends the 8 s
+##     launch at 3.16 m/s with the engine alive and the wheel back on the
+##     no-slip line (peak omega 15.418 rad/s, settled slip 0.0008).
+##   * Dry is byte-identical to AS4f: the wheel is never faster than the road,
+##     so engine_rpm == the vehicle-speed rpm and the spin probe is unchanged
+##     (and the saturated branch, where D53 lives, never runs).
 ##
 ## These tests prove:
 ##   1. On ice, full throttle from rest: the drive omega never reaches the 200
-##      rad/s clamp, the sustained spin is at or below 1.25 x the shutdown-implied
-##      bound (computed from the ratio at the settled tick), and the engine tracked
-##      the wheel up to the 1900 rpm shutdown. Fails pre-fix (omega 200.000, engine
-##      stuck at the vehicle rpm).
+##      rad/s clamp, the sustained spin is at or below 1.25 x the redline-
+##      implied bound (computed from the ratio at the settled tick), and the
+##      engine tracked the wheel into the 1800 redline band without reaching
+##      the 1900 shutdown (AS4i re-point; pre-AS4i the one-tick spike reached
+##      the shutdown on tick 2). Fails pre-AS4g (omega 200.000, engine stuck
+##      at the vehicle rpm).
 ##   2. engine_rpm exceeds the vehicle-speed rpm while the wheel is spinning.
 ##   3. Torque collapse: the wheel drove the engine past its torque-peak rpm, where
 ##      the curve has fallen off, so the drive-axle torque at that rpm is below the
@@ -69,11 +78,13 @@ extends GutTest
 ##      cut only fires under throttle (1850 rpm at full throttle: 0.0; 1799 rpm
 ##      at full throttle: +26,942 Nm).
 ##
-## Measured and unchanged by AS4h (tests 1-3): the one-tick ice startup transient
-## still jumps 700 -> 1900 rpm in a single tick, through the whole redline window
-## the cut sits in, so the from-rest ice launch still shuts the engine down on
-## tick 2 (reported in the re-pointed tests in test_tire_slip_curve.gd and
-## test_wheel_surfaces.gd; see docs/evidence/phase1/engine_wheel_speed.txt).
+## AS4i (this slice's predecessor's residual, now fixed): the one-tick ice
+## startup transient that jumped 700 -> 1900 rpm in a single tick and shut the
+## engine down on tick 2 is gone -- the reflected engine-side inertia (D53,
+## test_driveline_inertia.gd) removes the spike, so tests 1-3 now measure the
+## bounded sawtooth (max rpm 1863, shutdown never reached) instead of the
+## transient. The dry regime (tests 4-8) is unchanged by AS4i: the wheel never
+## saturates on dry, so the D53 line never runs.
 
 const HARNESS_SCENE: String = "res://tests/sim/combination_rest_harness.tscn"
 const CONTROLLER_SRC: String = "res://scripts/vehicles/combination_controller.gd"
@@ -155,12 +166,13 @@ func _ice_drive_wheel() -> WheelRig:
 	return _drive_wheel(_harness.controller)
 
 
-## The wheel rate (rad/s) the driveline cannot push the engine past before the
-## 1900 rpm shutdown, for a given total driveline ratio: shutdown rpm is
-## shutdown_rpm * 2*pi/60 rad/s of crank, divided by the total ratio.
-func _shutdown_bound(ratio: float) -> float:
+## The wheel rate (rad/s) at which the redline (1800 rpm) maps through the
+## total driveline ratio of a gear: redline rad/s of crank divided by the
+## total ratio. AS4i: the 1800 fuel cut is the bound the spinning wheel runs
+## against (the 1900 shutdown is no longer reached from this regime).
+func _redline_bound(ratio: float) -> float:
 	return (
-		(PHYSICS_CONSTANTS.ENGINE_SHUTDOWN_RPM * 2.0 * PI / 60.0)
+		(PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM * 2.0 * PI / 60.0)
 		/ (ratio * PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO)
 	)
 
@@ -195,7 +207,7 @@ func _drive_torque_at_rpm(c: Node, rpm: float) -> float:
 # --- 1. Ice: the spin is bounded, not pinned at the 200 rad/s clamp -----------
 
 
-func test_ice_launch_omega_bounded_by_shutdown() -> void:
+func test_ice_launch_omega_bounded_by_limiter() -> void:
 	_harness = await _make_harness()
 	var drive: WheelRig = await _ice_drive_wheel()
 	var c: Node = _harness.controller
@@ -220,13 +232,14 @@ func test_ice_launch_omega_bounded_by_shutdown() -> void:
 		if i >= ICE_DRIVE_TICKS - SETTLED_WINDOW:
 			settled_omega = maxf(settled_omega, omega)
 			settled_ratio = c.transmission.ratio()
-	var bound: float = _shutdown_bound(peak_ratio)
-	var settled_bound: float = _shutdown_bound(settled_ratio)
+	var bound: float = _redline_bound(peak_ratio)
+	var settled_bound: float = _redline_bound(settled_ratio)
 	print(
 		(
 			(
-				"AS4g ice: peak_omega=%.3f (clamp=200) peak_slip=%+.4f gear=%d ratio=%.3f "
-				+ "bound=%.3f; settled_omega=%.3f settled_bound=%.3f (1.25x=%.3f); max_engine_rpm=%.0f"
+				"AS4g ice (AS4i re-pointed): peak_omega=%.3f (clamp=200) peak_slip=%+.4f gear=%d "
+				+ "ratio=%.3f bound=%.3f; settled_omega=%.3f settled_bound=%.3f (1.25x=%.3f); "
+				+ "max_engine_rpm=%.0f"
 			)
 			% [
 				peak_omega,
@@ -241,9 +254,10 @@ func test_ice_launch_omega_bounded_by_shutdown() -> void:
 			]
 		)
 	)
-	# The core fix: the wheel no longer runs to (or pins at) the 200 rad/s clamp.
-	# Pre-fix the sustained omega is 200.000; post-fix it is a ~22.9 single-tick
-	# transient that decays to ~0.
+	# The core fix: the wheel no longer runs to (or pins at) the 200 rad/s
+	# clamp. Pre-AS4i the one-tick startup transient spiked it to 22.860 rad/s
+	# and the engine died on tick 2; post-AS4i the peak is the bounded sawtooth
+	# (measured 10.909 in this 480-tick window, gear 1).
 	assert_lt(
 		peak_omega,
 		200.0,
@@ -252,25 +266,41 @@ func test_ice_launch_omega_bounded_by_shutdown() -> void:
 			% peak_omega
 		)
 	)
-	# The sustained spin (the one-tick startup transient excluded) is at or below
-	# 1.25 x the shutdown-implied bound for the gear at the settled tick. This is
-	# the physical bound the fix provides: the engine follows the wheel and shuts
-	# down before the wheel can keep spinning.
+	# The sustained spin (the startup transient excluded) is at or below
+	# 1.25 x the REDLINE-implied bound for the gear at the settled tick.
+	# AS4i re-point (was the 1900 shutdown bound): the reflected engine-side
+	# inertia (D53) means the 1800 redline fuel cut, not the 1900 shutdown,
+	# is the bound the wheel runs against (measured 10.909 in the 1 <-> 2
+	# hunt, against 1.25 x 17.832 = 22.289 with the settled tick in gear 2;
+	# even tighter, 1.25 x 10.539 = 13.174, if the settled tick is in gear 1).
 	assert_lt(
 		settled_omega,
 		1.25 * settled_bound,
 		(
-			"AS4g: sustained omega %.3f exceeds 1.25 x shutdown bound %.3f (gear %d ratio %.3f)"
+			"AS4g: sustained omega %.3f exceeds 1.25 x redline bound %.3f (gear %d ratio %.3f)"
 			% [settled_omega, 1.25 * settled_bound, c.transmission.gear, settled_ratio]
 		)
 	)
-	# The engine tracked the wheel up to the shutdown, which is what stops the
-	# sustained spin. Pre-fix the engine sat at the vehicle (idle) rpm.
+	# AS4i re-point (was "max_engine_rpm >= 1900 shutdown"): the engine tracks
+	# the wheel into the redline band (measured max 1863) and the cut keeps it
+	# below the 1900 shutdown (measured max 1863 < 1900; the engine stays
+	# alive, see test_driveline_inertia.gd).
 	assert_gte(
+		max_engine_rpm,
+		PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM,
+		(
+			"AS4g: engine_rpm never reached the %.0f redline (max %.0f); wheel not following engine"
+			% [PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM, max_engine_rpm]
+		)
+	)
+	assert_lt(
 		max_engine_rpm,
 		PHYSICS_CONSTANTS.ENGINE_SHUTDOWN_RPM,
 		(
-			"AS4g: engine_rpm never reached the %.0f rpm shutdown (max %.0f); wheel not following engine"
+			(
+				"AS4g: engine_rpm reached the %.0f shutdown (max %.0f); the limiter is no longer "
+				+ "the binding bound"
+			)
 			% [PHYSICS_CONSTANTS.ENGINE_SHUTDOWN_RPM, max_engine_rpm]
 		)
 	)

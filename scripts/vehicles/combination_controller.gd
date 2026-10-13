@@ -350,8 +350,13 @@ func _step(dt: float) -> void:
 	# 4. Load transfer (section 5.2): quasi-static per axle pair, capped 18 percent.
 	var transfer_long: float = _load_transfer(dt)
 
-	# 5. Driveline and brake demands.
-	var drive_torque_nm: float = _drive_wheel_torque()
+	# 5. Driveline and brake demands. The total ratio is read once per tick
+	# here and passed as a plain number: the per-wheel loop must not touch the
+	# transmission. The saturated integrator takes the wheel inertia plus the
+	# engine-side inertia reflected through this ratio (D53).
+	var drive_ratio: float = transmission.ratio()
+	var drive_torque_nm: float = _drive_wheel_torque(drive_ratio)
+	var wheel_inertia_kg_m2: float = DrivelineModel.effective_inertia_kg_m2(drive_ratio)
 	var brake_torques: Dictionary = _brake_wheel_torques()
 	var retarder_n: float = 0.0
 	if transmission.retarder_allowed(retarder_stage, speed):
@@ -362,7 +367,9 @@ func _step(dt: float) -> void:
 
 	# 6. Per-wheel suspension and tire forces.
 	for w in wheels:
-		_step_wheel(w, dt, drive_torque_nm, brake_torques, retarder_n, transfer_long)
+		_step_wheel(
+			w, dt, drive_torque_nm, brake_torques, retarder_n, transfer_long, wheel_inertia_kg_m2
+		)
 
 	# 7. Kingpin torques (section 5.5) applied to both bodies, equal/opposite.
 	if coupled:
@@ -427,7 +434,8 @@ func _step_wheel(
 	drive_torque_nm: float,
 	brake_torques: Dictionary,
 	retarder_n: float,
-	transfer_long: float
+	transfer_long: float,
+	wheel_inertia_kg_m2: float
 ) -> void:
 	var body: RigidBody3D = tractor if (w.role == "steer" or w.role == "drive") else trailer
 	var anchor_global: Vector3 = body.global_transform * w.local_pos
@@ -617,6 +625,8 @@ func _step_wheel(
 	# / radius. Only when the friction ellipse saturates does a real torque
 	# imbalance exist (the wheel can spin up or lock), so keep the integrator for
 	# that transient only -- identical to the pre-fix behaviour in that case.
+	# `wheel_inertia_kg_m2` is computed once per tick in _step and passed in as
+	# a plain number; the saturated branch is the only place it is used (D53).
 	if w.role == "drive":
 		if absf(demand_n) <= adhesion:
 			wheel_omega_rad_s = v_forward_wheel / radius
@@ -626,7 +636,7 @@ func _step_wheel(
 				- float(brake_torques.get("drive", 0.0))
 				- delivered_n * radius
 			)
-			wheel_omega_rad_s += net_torque * dt / maxf(PHYSICS_CONSTANTS.WHEEL_INERTIA_KG_M2, 0.1)
+			wheel_omega_rad_s += net_torque * dt / maxf(wheel_inertia_kg_m2, 0.1)
 		wheel_omega_rad_s = clampf(wheel_omega_rad_s, -200.0, 200.0)
 
 
@@ -705,15 +715,9 @@ func _drive_forward_speed() -> float:
 
 
 func _engine_rpm_from_wheel_rate(wheel_rate_rad_s: float) -> float:
-	# wheel_rate (rad/s) -> engine rpm: * ratio * FINAL_DRIVE_RATIO * 60 / (2*PI),
-	# clamped to idle/shutdown. The single conversion both rpm paths share.
-	var ratio: float = transmission.ratio()
-	if ratio <= 0.0:
-		return PHYSICS_CONSTANTS.ENGINE_IDLE_RPM
-	var rpm: float = (
-		absf(wheel_rate_rad_s) * ratio * PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO * 60.0 / (2.0 * PI)
-	)
-	return clampf(rpm, PHYSICS_CONSTANTS.ENGINE_IDLE_RPM, PHYSICS_CONSTANTS.ENGINE_SHUTDOWN_RPM)
+	# The conversion lives in DrivelineModel (AS4i); this wrapper keeps the
+	# state, the current gear ratio, on the controller side.
+	return DrivelineModel.engine_rpm_from_wheel_rate(wheel_rate_rad_s, transmission.ratio())
 
 
 func _engine_rpm(drive_speed: float) -> float:
@@ -721,32 +725,26 @@ func _engine_rpm(drive_speed: float) -> float:
 	return _engine_rpm_from_wheel_rate(wheel_rate)
 
 
-func _drive_wheel_torque() -> float:
+func _drive_wheel_torque(total_ratio: float = 0.0) -> float:
 	if not engine_running or jackknifed:
 		return 0.0
 	if transmission.gear == 0:
 		return 0.0
+	var ratio: float = total_ratio if total_ratio > 0.0 else transmission.ratio()
 	var engine_nm: float = 0.0
 	if throttle > 0.0:
 		engine_nm = TireModel.engine_torque_nm(engine_rpm) * throttle
 	else:
 		engine_nm = -TireModel.engine_brake_torque_nm(engine_rpm)
-	var engagement: float = 1.0 - _clutch_engagement()
-	var torque: float = (
-		engine_nm
-		* transmission.ratio()
-		* PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO
-		* PHYSICS_CONSTANTS.DRIVELINE_EFFICIENCY
-		* engagement
-	)
-	if torque > 0.0 and _drive_forward_speed() > PHYSICS_CONSTANTS.TOP_SPEED_GOVERNOR_M_S:
-		torque = 0.0  # top speed governor fuel cut
 	# AS4h rev limiter: fuel cut at the pinned redline (1800). The curve is flat
 	# 1800-1900, so without it wheelspin drags the engine into the 1900 shutdown.
-	# Gated on throttle > 0.0 (engine braking untouched); no hysteresis, no constant.
+	# Gated on throttle > 0.0 (engine braking untouched); no hysteresis, no
+	# constant.
 	if throttle > 0.0 and engine_rpm >= PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM:
 		return 0.0  # rev limiter: fuel cut at the pinned redline
-	return torque
+	return DrivelineModel.wheel_torque_nm(
+		engine_nm, throttle, ratio, 1.0 - _clutch_engagement(), _drive_forward_speed()
+	)
 
 
 func _clutch_engagement() -> float:
