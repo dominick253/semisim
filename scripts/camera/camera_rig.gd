@@ -33,6 +33,8 @@ var _controller: Node3D = null
 var _chase_position: Vector3 = Vector3.ZERO
 var _trailer_position: Vector3 = Vector3.ZERO
 var _shake_remaining_s: float = 0.0
+var _cab_eye_cache := _PivotCache.new()
+var _trailer_ref_cache := _PivotCache.new()
 
 
 func bind(controller: Node3D) -> void:
@@ -145,17 +147,32 @@ func tractor_ref_global() -> Vector3:
 
 
 func trailer_ref_global() -> Vector3:
-	## Camera anchor for the trailer, matching the GLB `trailer_ref` pivot role.
+	## Camera anchor for the trailer. Reads the GLB `trailer_ref` empty (AS2)
+	## when a model is parented under the trailer body, and falls back to the
+	## pinned TRAILER_REF_LOCAL (DEVIATIONS D31) until then.
 	if _controller == null:
 		return Vector3.ZERO
 	var body: RigidBody3D = _controller.trailer as RigidBody3D
+	if body == null:
+		return Vector3.ZERO
+	var pivot: Node3D = _trailer_ref_cache.resolve_for(body, "trailer_ref")
+	if pivot != null:
+		return pivot.global_position
 	return body.global_transform * PHYSICS_CONSTANTS.TRAILER_REF_LOCAL
 
 
 func cab_eye_global() -> Vector3:
+	## Camera anchor for the cab eye. Reads the GLB `cab_eye` empty (AS1) when
+	## a model is parented under the tractor body, and falls back to the
+	## pinned CAB_EYE_LOCAL (DEVIATIONS D31) until then.
 	if _controller == null:
 		return Vector3.ZERO
 	var body: RigidBody3D = _controller.tractor as RigidBody3D
+	if body == null:
+		return Vector3.ZERO
+	var pivot: Node3D = _cab_eye_cache.resolve_for(body, "cab_eye")
+	if pivot != null:
+		return pivot.global_position
 	return body.global_transform * PHYSICS_CONSTANTS.CAB_EYE_LOCAL
 
 
@@ -366,3 +383,24 @@ func _apply_shake(shake: Vector3) -> void:
 
 func _on_jackknife() -> void:
 	_shake_remaining_s = PHYSICS_CONSTANTS.CAMERA_SHAKE_SECONDS
+
+
+class _PivotCache:
+	## One resolved GLB pivot, cached per body so the tree is walked at most
+	## once per body per rig lifetime (D47). Re-resolves only when the cached
+	## reference fails is_instance_valid: the body was freed and replaced, or
+	## the pivot node was removed (model swapped out).
+	var body: Node = null
+	var pivot: Node3D = null
+
+	func resolve_for(body: Node, pivot_name: String) -> Node3D:
+		var fresh: bool = (
+			self.body == body
+			and is_instance_valid(self.body)
+			and (self.pivot == null or is_instance_valid(self.pivot))
+		)
+		if fresh:
+			return self.pivot
+		self.pivot = ModelPivots.find_pivot(body, pivot_name)
+		self.body = body
+		return self.pivot

@@ -10,6 +10,7 @@ const HARNESS_SCENE: String = "res://tests/sim/combination_rest_harness.tscn"
 
 var _harness: Node = null
 var _rig: Node = null
+var _models: Array[Node] = []
 
 
 func before_each() -> void:
@@ -23,6 +24,10 @@ func before_each() -> void:
 
 func after_each() -> void:
 	_rig.queue_free()
+	for model in _models:
+		if is_instance_valid(model):
+			model.queue_free()
+	_models.clear()
 	if is_instance_valid(_harness):
 		_harness.queue_free()
 		await get_tree().physics_frame
@@ -224,3 +229,78 @@ func test_right_stick_jumps_to_free_instead_of_cycling() -> void:
 	layer.sample()
 	Input.action_release("gamepad_camera_cycle")
 	assert_eq(_rig.mode, CameraRig.Mode.CHASE, "RB cycles from FREE back to CHASE")
+
+
+# ---------------------------------------------------------------------------
+# GLB pivot reading (D31, D47)
+# ---------------------------------------------------------------------------
+
+
+func test_cab_eye_falls_back_to_the_pinned_local_without_a_model() -> void:
+	await _harness.settle(30)
+	var body: RigidBody3D = _harness.controller.tractor as RigidBody3D
+	var expected: Vector3 = body.global_transform * PHYSICS_CONSTANTS.CAB_EYE_LOCAL
+	assert_almost_eq(
+		_rig.cab_eye_global(),
+		expected,
+		Vector3(0.001, 0.001, 0.001),
+		"placeholder fallback path intact"
+	)
+
+
+func test_cab_eye_reads_the_glb_empty_when_a_model_is_parented() -> void:
+	## The assertion of the debt fix: the real cab_eye anchor (0, 2.10, -4.20)
+	## is ~4.1 m away from the placeholder CAB_EYE_LOCAL (0.35, 1.15, -0.20),
+	## so the rig's answer must move off the fallback by more than 0.5 m.
+	var body: RigidBody3D = _harness.controller.tractor as RigidBody3D
+	_parent_tractor_model(body)
+	await _harness.settle(30)
+	var fallback: Vector3 = body.global_transform * PHYSICS_CONSTANTS.CAB_EYE_LOCAL
+	var expected: Vector3 = body.global_transform * Vector3(0.0, 2.10, -4.20)
+	var actual: Vector3 = _rig.cab_eye_global()
+	assert_gt(
+		actual.distance_to(fallback), 0.5, "rig picked up the GLB cab_eye, not the placeholder"
+	)
+	assert_almost_eq(
+		actual,
+		expected,
+		Vector3(0.001, 0.001, 0.001),
+		"cab eye at the GLB anchor under the body transform"
+	)
+
+
+func _parent_tractor_model(body: RigidBody3D) -> Node:
+	## Instantiates the tractor GLB into the tree under the physics body and
+	## registers it for teardown. Parented, never a bare instantiate(): an
+	## unparented GLB leaks ObjectDB instances into the run.
+	var model: Node = load("res://models/tractor.glb").instantiate()
+	body.add_child(model)
+	_models.append(model)
+	return model
+
+
+func test_cab_eye_returns_to_fallback_after_the_model_is_removed() -> void:
+	## Parent-added regression guard for the per-body pivot cache. The next
+	## slice swaps the placeholder visuals for the GLB, so a cached pivot whose
+	## node has been freed must re-resolve to the fallback instead of reporting
+	## an anchor that no longer exists.
+	var body: RigidBody3D = _harness.controller.tractor as RigidBody3D
+	var model: Node = _parent_tractor_model(body)
+	await _harness.settle(30)
+	var with_model: Vector3 = _rig.cab_eye_global()
+	model.queue_free()
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var after: Vector3 = _rig.cab_eye_global()
+	var fallback: Vector3 = body.global_transform * PHYSICS_CONSTANTS.CAB_EYE_LOCAL
+	assert_almost_eq(
+		after,
+		fallback,
+		Vector3(0.001, 0.001, 0.001),
+		"cache re-resolved once the pivot node was freed"
+	)
+	assert_gt(
+		with_model.distance_to(after),
+		0.5,
+		"the cached GLB answer and the fallback answer really differ"
+	)
