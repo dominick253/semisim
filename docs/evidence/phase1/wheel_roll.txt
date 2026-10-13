@@ -1,0 +1,101 @@
+CITYHAUL AS4d: the drive axle rolls, so the wheels spin and slip reads true
+==========================================================================
+
+Repo state: after AS4b (commit 7e5f9b1). This slice changes only
+scripts/vehicles/combination_controller.gd plus its tests.
+
+Commands (run from /home/dom/dev/games/semisim):
+
+  godot-headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gdir=res://tests/unit -ginclude_subdirs -gexit
+  godot-headless --path . tests/sim/smoke_controls.tscn
+  godot-headless --path . -s res://tests/scratch/wheel_spin_probe.gd
+  godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd
+  xvfb-run -a --server-args="-screen 0, 1280x720x24" \
+    ~/.local/bin/godot --display-driver x11 --disable-vsync --path . \
+    res://tests/scratch/fps_probe.tscn
+  xvfb-run -a --server-args="-screen 0, 1280x720x24" \
+    ~/.local/bin/godot --display-driver x11 --disable-vsync --path . \
+    tests/sim/shot_cameras.tscn   (also shot_hud, shot_audio)
+
+## The defect and the fix
+
+`wheel_omega_rad_s` was integrated from the contact torque imbalance. The
+torque-demand tire model delivers exactly the demand while the tyre grips, so
+the imbalance is about zero every tick and the integrator never accumulated.
+The fix sets the rate from the no-slip relation `v_forward_wheel / radius`
+while `absf(demand_n) <= adhesion`, and keeps the original integrator only when
+the friction ellipse saturates. The tire model, `delivered_n`, the ABS branch
+and every PHYSICS_CONSTANTS value are untouched. Visual spin is now scaled per
+axle by `drive_radius / wheel_radius`, so the 0.554 m steer tyres no longer
+under-spin by 1.6 percent against the 0.563 m drive and bogie tyres.
+
+## Wheel roll probe, 10 s full-throttle launch, one sample per second
+
+Before (AS4b, same probe):
+
+  t=2.0  speed=1.38  omega=0.000   slip=-1.0000  node_spin=0.0 deg
+  t=5.0  speed=3.64  omega=0.000   slip=-1.0000  node_spin=0.0 deg
+  t=10.0 speed=6.26  omega=0.000   slip=-1.0000  node_spin=0.0 deg
+
+After (this slice):
+
+  t=1.0  speed=0.69  omega=1.254   slip=-0.0072  node_spin=27.6 deg
+  t=2.0  speed=1.38  omega=2.427   slip=-0.0047  node_spin=115.2 deg
+  t=3.0  speed=2.01  omega=3.574   slip=-0.0030  node_spin=100.4 deg
+  t=4.0  speed=2.64  omega=4.697   slip=-0.0029  node_spin=94.3 deg
+  t=5.0  speed=3.63  omega=6.449   slip=-0.0031  node_spin=4.8 deg
+  t=6.0  speed=4.75  omega=8.441   slip=-0.0023  node_spin=8.6 deg
+  t=7.0  speed=5.30  omega=9.423   slip=-0.0006  node_spin=61.0 deg
+  t=8.0  speed=5.63  omega=9.992   slip=-0.0006  node_spin=159.7 deg
+  t=9.0  speed=5.95  omega=10.576  slip=-0.0005  node_spin=69.0 deg
+  t=10.0 speed=6.26  omega=11.120  slip=-0.0005  node_spin=84.0 deg
+
+Reading: at 6.26 m/s the no-slip rate is 6.26 / 0.563 = 11.12 rad/s and the
+controller reports 11.120. Longitudinal slip moved from the locked-wheel -1.0
+to about -0.0005. The node_spin column is a single angle_to read from the start
+pose, so it wraps at 180 degrees; it is a non-zero proof of rotation, not a
+cumulative angle. The cumulative claim is carried by
+tests/unit/test_wheel_rolling.gd, which sums per-tick rotation and requires
+spin times radius to equal travelled distance within 2 percent.
+
+## Physics and render cost unchanged
+
+Same 60 s yard drive, same llvmpipe probe, before and after this slice:
+
+| Measure         | AS4b    | AS4d    |
+| --------------- | ------: | ------: |
+| max_kmh         |   21.70 |   21.70 |
+| kingpin_err_m   |   0.008 |   0.008 |
+| articulation    |    0.00 |    0.00 |
+| physics ticks/s |  119.65 |  120.15 |
+| frame ms mean   |    5.63 |    5.55 |
+| frame ms p95    |    7.05 |    6.82 |
+| mean fps        |  177.61 |  180.14 |
+
+The wheel roll fix moved no physics and costs nothing to draw. The small fps
+difference is run-to-run noise on llvmpipe.
+
+## Harness status after the change
+
+Unit suite: Scripts 23, Tests 186, Passing 186, Failing 0, Asserts 5123
+(baseline 182 tests and 5106 asserts, so +4 tests and +17 asserts).
+smoke_controls: SMOKE OK. shot_cameras, shot_hud and shot_audio under xvfb:
+exit 0 with 0 SCRIPT ERROR lines each; the audio squeal gate still opens
+(lateral_slip 0.202, gate=true).
+
+## Saturation reachability, measured, and the gap it leaves
+
+tests/scratch/wheel_saturation_probe.gd drives to 2.65 m/s and pins the brake
+pedal at 1.0 on the dry yard surface:
+
+  t=0.0 speed=2.65 omega=4.711 v_over_r=4.709 slip=-0.0029 abs=false
+        normal_n=57090 adhesion_n=65654 brake_nm=12000 demand_n=21314
+
+The pinned drive brake torque (BRAKE_TORQUE_DRIVE_NM 12000) produces a 21,314 N
+demand against a 65,654 N adhesion limit, so the friction ellipse does not
+saturate on dry and the integrator branch never runs. `WheelRig.mu()` returns
+`tire["mu_dry"]` unconditionally, so the mu_wet 0.70 and mu_ice 0.25 columns in
+PHYSICS_CONSTANTS are dead data and no in-game situation currently reaches
+saturation, ABS engagement or the spin-up and lock transient. Wiring surface
+dependent mu is the next slice, AS4e.

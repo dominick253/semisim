@@ -18,17 +18,15 @@ const HARNESS_SCENE: String = "res://tests/sim/combination_rest_harness.tscn"
 const STEER_ANCHOR_LOCAL: Vector3 = Vector3(1.10, 0.554, -6.500)
 const ANCHOR_TOL: float = 0.001
 const SPIN_WINDOW_TICKS: int = 12
-# Known drive-wheel angular velocity the spin phase applies, and the tolerance on
-# the resulting local-rotation change. The spin is injected rather than driven by
-# the throttle because of a measured physics defect, not by choice: a full
-# 10 s throttle launch reaches 6.26 m/s while wheel_omega_rad_s stays 0.000 and
-# the drive-wheel slip ratio sits pegged at -1.0 (docs/evidence/phase1/
-# visual_swap_yard.txt, tests/scratch/wheel_spin_probe.gd). The driveline never
-# accumulates roll rate, so the wheels do not spin on their own yet. Slice AS4d
-# fixes the integrator; when it lands, this test must drop the injection and
-# assert omega against speed instead.
-const SPIN_OMEGA_RAD_S: float = 24.0
+# Phase B measures the drive wheel's spin over this window and compares it against
+# the integral of the controller's own wheel_omega_rad_s. The spin now comes from
+# driving (AS4d fixed the integrator so the driveline produces a real roll rate
+# from the no-slip relation instead of leaving it at 0.000); per-tick measurement
+# keeps the accumulated rotation below 180 deg so it never wraps.
 const SPIN_TOL_RAD: float = 0.15
+# Extra straight-drive ticks Phase B runs before measuring, so the driveline is
+# well into a roll (speed and omega comfortably above the no-slip floor).
+const SPIN_DRIVE_TICKS: int = 240
 # Steer node rotation.y must track the applied steer angle this closely, and the
 # steer angle must actually have engaged so the comparison is not 0 == 0.
 const STEER_TRACK_TOL: float = 0.001
@@ -129,28 +127,36 @@ func test_steering_and_spin_drive_the_glb_wheels() -> void:
 		STEER_TRACK_TOL,
 		"steer node rotation.y tracks the applied steer angle"
 	)
-	# Phase B: the drive wheel spins. The spin is injected because the driveline
-	# does not yet produce one (see SPIN_OMEGA_RAD_S above and AS4d): set a known
-	# drive-wheel angular velocity and confirm the node's LOCAL rotation changes by exactly
-	# omega * ticks * DT. Local, not global: the combination is still coasting
-	# and yawing, and a global reading would change from body motion alone --
-	# passing even without the spin fix. With throttle 0 the net drive torque is
-	# ~0, so wheel_omega holds the set value across the window (measured 24.000).
-	_c.throttle = 0.0
+	# Phase B: the drive wheel spins from driving, not from an injected rate.
+	# Phase A already asserted the steer tracking; here the combination keeps
+	# driving straight so the driveline is in a solid roll, and the drive wheel
+	# must accumulate LOCAL rotation equal to the integral of the controller's own
+	# wheel_omega_rad_s (the no-slip rate the driveline now produces, AS4d).
+	# Per-tick measurement keeps the accumulated rotation below 180 deg. Local,
+	# not global: the combination is still yawing, and a global reading would
+	# change from body motion alone.
+	_c.throttle = 1.0
+	_c.steer_input_axis = 0.0
 	_c.brake_pedal = 0.0
-	_c.wheel_omega_rad_s = SPIN_OMEGA_RAD_S
+	await _harness.settle(SPIN_DRIVE_TICKS)
 	var drive: Node3D = _resolve_wheel(_c.tractor, "WheelDriveL")
 	assert_true(drive != null and drive is MeshInstance3D, "the drive wheel node resolves")
-	var base_before: Basis = drive.basis
-	await _harness.settle(SPIN_WINDOW_TICKS)
-	var base_after: Basis = drive.basis
-	var spin_delta: float = base_before.get_rotation_quaternion().angle_to(
-		base_after.get_rotation_quaternion()
-	)
-	var expected: float = SPIN_OMEGA_RAD_S * SPIN_WINDOW_TICKS * (1.0 / 120.0)
+	var q_prev: Quaternion = drive.basis.get_rotation_quaternion()
+	var spin_delta: float = 0.0
+	var omega_integral: float = 0.0
+	for _i in SPIN_WINDOW_TICKS:
+		await get_tree().physics_frame
+		var q_now: Quaternion = drive.basis.get_rotation_quaternion()
+		spin_delta += q_prev.angle_to(q_now)
+		q_prev = q_now
+		omega_integral += _c.wheel_omega_rad_s * (1.0 / 120.0)
+	assert_gt(spin_delta, 0.1, "the drive wheel spun from driving: %.4f rad" % spin_delta)
 	assert_almost_eq(
 		spin_delta,
-		expected,
+		omega_integral,
 		SPIN_TOL_RAD,
-		"drive wheel spins: local rotation changed %.4f rad, expected %.4f" % [spin_delta, expected]
+		(
+			"drive wheel spins from driving: %.4f rad vs %.4f rad integral"
+			% [spin_delta, omega_integral]
+		)
 	)

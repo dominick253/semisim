@@ -572,12 +572,26 @@ func _step_wheel(
 	var apply_vec: Vector3 = wheel_heading * delivered_n + wheel_right * fy
 	body.apply_force(apply_vec, _offset_from_origin(body, w.contact_global))
 
-	# Quasi-static drive axle angular state for the next tick.
+	# Drive axle angular state for the next tick.
+	#
+	# The torque-demand model delivers exactly the demand force while the tyre
+	# grips (delivered_n == demand_n), so the net torque an integrator sees is ~0
+	# every tick and a pure integrator never accumulates (omega stayed 0.000 at
+	# speed while the drive-wheel slip read -1.0). While gripping the wheel is on
+	# the no-slip line by definition, so set it directly: omega = v_forward_wheel
+	# / radius. Only when the friction ellipse saturates does a real torque
+	# imbalance exist (the wheel can spin up or lock), so keep the integrator for
+	# that transient only -- identical to the pre-fix behaviour in that case.
 	if w.role == "drive":
-		var net_torque: float = (
-			drive_torque_nm * 0.5 - float(brake_torques.get("drive", 0.0)) - delivered_n * radius
-		)
-		wheel_omega_rad_s += net_torque * dt / maxf(PHYSICS_CONSTANTS.WHEEL_INERTIA_KG_M2, 0.1)
+		if absf(demand_n) <= adhesion:
+			wheel_omega_rad_s = v_forward_wheel / radius
+		else:
+			var net_torque: float = (
+				drive_torque_nm * 0.5
+				- float(brake_torques.get("drive", 0.0))
+				- delivered_n * radius
+			)
+			wheel_omega_rad_s += net_torque * dt / maxf(PHYSICS_CONSTANTS.WHEEL_INERTIA_KG_M2, 0.1)
 		wheel_omega_rad_s = clampf(wheel_omega_rad_s, -200.0, 200.0)
 
 
@@ -597,7 +611,17 @@ func _update_wheel_visuals() -> void:
 	# that child spins instead. Each wheel is resolved through
 	# ModelPivots.find_pivot with a per-body cache so the tree is walked once
 	# per body per lifetime, not every tick (D47, the CameraRig pattern).
-	var spin: float = wheel_omega_rad_s * DT
+	# wheel_omega_rad_s is the DRIVE-AXLE angular rate (rad/s at the drive
+	# rolling radius). A wheel of a different rolling radius must spin
+	# proportionally to cover the same ground distance:
+	# spin_rate = omega * drive_radius / wheel_radius. The steer tyres (0.554 m)
+	# are smaller than the drive and bogie tyres (0.563 m), so a single shared
+	# rate under-spins the steer axle by 1.6 percent.
+	var drive_radius: float = PHYSICS_CONSTANTS.TIRE_DRIVE["rolling_radius_m"]
+	var steer_spin: float = (
+		wheel_omega_rad_s * (drive_radius / PHYSICS_CONSTANTS.TIRE_STEER["rolling_radius_m"]) * DT
+	)
+	var drive_spin: float = wheel_omega_rad_s * DT  # drive + bogie share the drive radius
 	var steer_rad: float = steer_angle_rad
 	# Steer axle: spin the wheel first, then set the yaw last so rotation.y
 	# reads back exactly the commanded steer angle even though the node itself
@@ -609,9 +633,9 @@ func _update_wheel_visuals() -> void:
 	]:
 		if node == null:
 			continue
-		_spin_wheel(node, spin)
+		_spin_wheel(node, steer_spin)
 		node.rotation.y = steer_rad
-	# Drive axle and trailer bogie: spin only.
+	# Drive axle and trailer bogie: spin only (both share the drive radius).
 	for node in [
 		_drive_l_cache.resolve_for(tractor, "WheelDriveL"),
 		_drive_r_cache.resolve_for(tractor, "WheelDriveR"),
@@ -620,7 +644,7 @@ func _update_wheel_visuals() -> void:
 		_trailer_rl_cache.resolve_for(trailer, "TrailerWheelRL"),
 		_trailer_rr_cache.resolve_for(trailer, "TrailerWheelRR"),
 	]:
-		_spin_wheel(node, spin)
+		_spin_wheel(node, drive_spin)
 
 
 func _spin_wheel(node: Node3D, spin: float) -> void:
