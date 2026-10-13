@@ -335,7 +335,9 @@ func _step(dt: float) -> void:
 
 	# 2. Transmission, engine, air.
 	var drive_speed: float = _drive_forward_speed()
-	engine_rpm = _engine_rpm(drive_speed)
+	# Clutch engaged (automatic): the driveline rigidly couples engine and
+	# wheel, so the engine follows the faster side (AS4g). No new clamp.
+	engine_rpm = maxf(_engine_rpm(drive_speed), _engine_rpm_from_wheel_rate(wheel_omega_rad_s))
 	transmission.auto_shift(engine_rpm, drive_speed)
 	air.step(dt, engine_rpm if engine_running else 0.0)
 	if engine_rpm >= PHYSICS_CONSTANTS.ENGINE_SHUTDOWN_RPM:
@@ -702,18 +704,21 @@ func _drive_forward_speed() -> float:
 	return tractor.linear_velocity.dot(fwd)
 
 
-func _engine_rpm(drive_speed: float) -> float:
+func _engine_rpm_from_wheel_rate(wheel_rate_rad_s: float) -> float:
+	# wheel_rate (rad/s) -> engine rpm: * ratio * FINAL_DRIVE_RATIO * 60 / (2*PI),
+	# clamped to idle/shutdown. The single conversion both rpm paths share.
 	var ratio: float = transmission.ratio()
 	if ratio <= 0.0:
 		return PHYSICS_CONSTANTS.ENGINE_IDLE_RPM
 	var rpm: float = (
-		(absf(drive_speed) / PHYSICS_CONSTANTS.TIRE_DRIVE["rolling_radius_m"])
-		* ratio
-		* PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO
-		* 60.0
-		/ (2.0 * PI)
+		absf(wheel_rate_rad_s) * ratio * PHYSICS_CONSTANTS.FINAL_DRIVE_RATIO * 60.0 / (2.0 * PI)
 	)
 	return clampf(rpm, PHYSICS_CONSTANTS.ENGINE_IDLE_RPM, PHYSICS_CONSTANTS.ENGINE_SHUTDOWN_RPM)
+
+
+func _engine_rpm(drive_speed: float) -> float:
+	var wheel_rate: float = absf(drive_speed) / PHYSICS_CONSTANTS.TIRE_DRIVE["rolling_radius_m"]
+	return _engine_rpm_from_wheel_rate(wheel_rate)
 
 
 func _drive_wheel_torque() -> float:
@@ -736,6 +741,11 @@ func _drive_wheel_torque() -> float:
 	)
 	if torque > 0.0 and _drive_forward_speed() > PHYSICS_CONSTANTS.TOP_SPEED_GOVERNOR_M_S:
 		torque = 0.0  # top speed governor fuel cut
+	# AS4h rev limiter: fuel cut at the pinned redline (1800). The curve is flat
+	# 1800-1900, so without it wheelspin drags the engine into the 1900 shutdown.
+	# Gated on throttle > 0.0 (engine braking untouched); no hysteresis, no constant.
+	if throttle > 0.0 and engine_rpm >= PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM:
+		return 0.0  # rev limiter: fuel cut at the pinned redline
 	return torque
 
 

@@ -1,0 +1,291 @@
+CITYHAUL AS4h: the redline is a fuel cut, and the engine follows the faster side of the driveline
+===============================================================================================
+
+Repo state: on main at HEAD 95ab9f3 (after AS4f). The working tree already carried
+the uncommitted AS4g change (engine rpm follows the faster side of the driveline)
+when this slice started; this slice adds the redline fuel cut on top of it. Touched
+files: scripts/vehicles/combination_controller.gd (AS4g rpm path already present,
+plus the new cut in `_drive_wheel_torque`), tests/unit/test_engine_follows_wheel.gd
+(3 limiter tests added), tests/unit/test_tire_slip_curve.gd (1 stale test re-pointed),
+tests/unit/test_wheel_surfaces.gd (1 stale test re-pointed, after_each cleanup),
+this file, and two rows (D51, D52) in docs/DEVIATIONS.md. No PHYSICS_CONSTANTS
+value was added or changed; no other code was touched.
+
+## The AS4g change (pre-existing in the working tree, documented here for the record)
+
+`_engine_rpm_from_wheel_rate(w)` returns `w.omega * RATIO` where RATIO is the rpm
+per rad/s of wheel spin in the current gear (`60.0 / TAU * ratio * FINAL_DRIVE_RATIO`);
+`engine_rpm` is `max(engine_rpm, _engine_rpm_from_wheel_rate(w))` after each wheel's
+physics step. The engaged-clutch path has no torque converter modelled, so the
+driveline is a rigid coupling and the engine must follow whichever side of it spins
+faster (D51). Both the road-speed term and the wheel-rate term pass through the same
+idle clamp (floor 700) and the same 1900 rpm shutdown clamp that already gated the
+road-speed term.
+
+AS4g measured outcome: the pre-AS4f ice launch pinned the drive omega at the 200
+rad/s integrator clamp with slip +69.0761; AS4g bounded the spin to 22.860 rad/s
+on a one-tick startup transient with peak slip +0.2373 (numbers below). Dry is
+byte-identical (the wheel never outruns the road, so the max() is a no-op).
+
+## What AS4g left broken: three stale tests, and the redline dead constant
+
+1. test_tire_slip_curve.gd / test_curve_is_wired_into_saturated_delivery
+   (old name test_saturation_cap_and_abs_wiring): its premise was that the spin
+   settles at the 200 rad/s integrator clamp and samples the steady saturated
+   state there. AS4g removed that state: the ice launch settles with the engine
+   dead (tick 2) and zero drive demand, so there is no steady saturated state to
+   sample. Re-pointed to the saturated spin-up tick itself: demand 17,918 N
+   against 14,481 N adhesion, slip +0.2373, delivered 14,134.5 N vs curve
+   14,135.2 N (0.00 percent).
+2. test_tire_slip_curve.gd / test_ice_launch_flat_top_ratio (old name
+   test_saturation_peak_omega_flat_top): `peak_omega > 199` pinned the runaway
+   that AS4g removed. Re-pointed to the bounded launch: peak omega 22.860 rad/s
+   (< 200, one-tick only, and still 2.2x the 10.539 rad/s the redline implies in
+   gear 1 -- that bound is violated by the startup transient and is reported, not
+   enforced), redline streak 1, shutdown at tick 2 (reported per brief rule 3),
+   gear sequence 1 -> 2 at tick 2, back to 1 at tick 3, max |speed| > 0.01 m/s.
+3. test_wheel_surfaces.gd / test_ice_launch_saturates_the_drive_tyre_and_engages_abs:
+   `v_final > 1.0 m/s` and the omega-overspeed metric were written against the
+   runaway launch. The bounded launch crawls (max |speed| 0.0385 m/s in the GUT
+   run, 0.069 m/s in the standalone probe -- the crawl direction follows the
+   rest-settle drift phase and flips between harness instances) and the
+   overspeed metric's v > 0.3 m/s gate never opens, so the metric is 0 by
+   construction. Re-pointed: saturation and ABS engagement kept, speed bound
+   replaced with max |speed| > 0.01 m/s, engine dead at tick 2 reported.
+
+Redline dead constant: PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM is 1800 and
+ENGINE_SHUTDOWN_RPM is 1900, and the torque curve is flat 1600 Nm across the whole
+1800-1900 band (same 1600 Nm as the 1700-1800 band; 1450 Nm at 2000 rpm). Nothing
+in the drivetrain read the redline, so wheelspin in a low gear ran the engine
+straight through it into the 1900 shutdown, where `engine_running` goes false --
+and there is no restart path (`air.restart_engine()` is never called). Same defect
+family as the once-unused mu_wet/mu_ice columns.
+
+## Ice, gear 1 vs gear 5 (tests/scratch/ice_gear_probe.gd, 8 s, settle 0.5 s)
+
+Gear 1, automatic (AS4g, before this slice's cut -- and byte-identical with the
+cut in place: the cut cannot rescue a from-rest launch, see below):
+
+  ICEG t=0.0 gear=1 speed=0.00 rpm=700 omega=0.000 run=true abs=false
+  ICEG t=0.5 gear=1 speed=0.00 rpm=0 omega=22.898 run=false abs=true
+  ICEG t=1.0 gear=1 speed=-0.01 rpm=0 omega=-0.074 run=false abs=false
+  ICEG t=2.0 gear=1 speed=-0.01 rpm=0 omega=-0.055 run=false abs=false
+  ICEG t=3.0 gear=1 speed=0.00 rpm=0 omega=0.027 run=false abs=false
+  ICEG t=4.0 gear=1 speed=0.00 rpm=0 omega=0.024 run=false abs=false
+  ICEG t=5.0 gear=1 speed=0.01 rpm=0 omega=-0.026 run=false abs=false
+  ICEG t=7.0 gear=1 speed=0.02 rpm=0 omega=0.038 run=false abs=false
+
+The brief's pinned pre-slice numbers (gear 1 on ice: 35,835 N drive demand against
+14,478 N adhesion, engine_running false, speed 0.03 m/s) reproduce from the
+tick-level trace (tests/scratch/as4h_tick_trace.gd): tick 1 the wheel spikes to
+22.898 rad/s, per-axle demand 35,835 N, per-axle adhesion 28,956 N, delivered
+28,268 N, slip +0.2374; tick 2 the engine reads 1900 (clamped), the gearbox
+upshifts 1 -> 2 on the 1550 crossing, the shutdown fires (run=false), and no
+restart follows.
+
+Gear 5 locked (engine keeps running, grips, pulls the combination):
+
+  ICEG t=0.0 gear=5 speed=0.00 rpm=700 omega=0.000 run=true abs=false
+  ICEG t=0.5 gear=5 speed=0.00 rpm=700 omega=2.880 run=true abs=true
+  ICEG t=1.0 gear=5 speed=0.03 rpm=700 omega=3.368 run=true abs=false
+  ICEG t=2.0 gear=5 speed=0.13 rpm=819 omega=7.843 run=true abs=false
+  ICEG t=3.0 gear=5 speed=0.31 rpm=1046 omega=18.580 run=true abs=false
+  ICEG t=4.0 gear=5 speed=0.52 rpm=1303 omega=29.667 run=true abs=false
+  ICEG t=5.0 gear=5 speed=0.62 rpm=1442 omega=35.166 run=true abs=false
+  ICEG t=7.0 gear=5 speed=0.64 rpm=1461 omega=35.970 run=true abs=false
+
+The 0.63 m/s / 7,413 N figures the brief pinned for gear 5: the per-axle drive
+demand at the t=0.5..1.0 grip ticks is 7,413 N (2 x 3,706.5 N/wheel at full
+torque, gear 5) against 14,478 N adhesion -- demand below adhesion, so it grips
+and accelerates to the 0.62-0.64 m/s crawl visible above.
+
+## The change (scripts/vehicles/combination_controller.gd, _drive_wheel_torque)
+
+  # AS4h rev limiter: fuel cut at the pinned redline (1800). The curve is flat
+  # 1800-1900, so without it wheelspin drags the engine into the 1900 shutdown.
+  # Gated on throttle > 0.0 (engine braking untouched); no hysteresis, no constant.
+  if throttle > 0.0 and engine_rpm >= PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM:
+      return 0.0  # rev limiter: fuel cut at the pinned redline
+
+Gated on `throttle > 0.0` so the closed-throttle engine-braking branch (the
+negative-torque return earlier in the function) is untouched. No new constant, no
+hysteresis state: the cut re-arms the tick the rpm falls back below the redline,
+and the wheel slowing down under zero torque provides the separation.
+
+## Commands (run from /home/dom/dev/games/semisim)
+
+  timeout 500 godot-headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gdir=res://tests/unit -ginclude_subdirs -gexit
+  timeout 120 godot-headless --path . -s res://tests/scratch/ice_gear_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/ice_gear_probe.gd -- 5
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_spin_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd -- ice
+  timeout 120 godot-headless --path . -s res://tests/scratch/as4h_tick_trace.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/as4h_gradual.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/as4h_gutdry.gd
+  timeout 300 godot-headless --path . tests/sim/smoke_controls.tscn
+  LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe xvfb-run -a \
+    --server-args="-screen 0, 1280x720x24" ~/.local/bin/godot --display-driver x11 \
+    --disable-vsync --rendering-driver opengl3 --path . res://tests/scratch/fps_probe.tscn
+  ~/.local/bin/gdformat --check scripts tests
+  ~/.local/bin/gdlint scripts tests/unit tests/sim
+
+Counterfactual runs: the same commands re-run with the gate line replaced by
+`if false and ...` (verified restored byte-identical afterwards by diff).
+
+## Verification 1: unit suite
+
+Baseline in the tree at start (AS4g, before this slice):
+  Scripts 26, Tests 201, Passing 198, Failing 3, Asserts 5197/5203.
+  (178 of 5203 = the 3 stale tests' asserts plus their companions.)
+After this slice (two consecutive runs, identical):
+  Scripts 26, Tests 204, Passing 204, Failing 0, Asserts 5219.
+  204 = 201 + 3 new limiter tests; 5219 = 5197 - (asserts dropped when the two
+  re-pointed tests shed dead branches) + new limiter asserts.
+
+Measured numbers from the passing run (tests/unit/test_engine_follows_wheel.gd):
+  AS4h limit: below=+26942.3 at 1799, at=0.0 at 1800, above=0.0 at 1850
+  AS4h braking: tq(1900,throttle 0)=-6725.1 expected=-6725.1
+  AS4h dry: max_rpm=1551.6 (tick 633) v=6.839 gear=2 run=true redline=1800
+  AS4h gradual: min=1800 max=1802 run=true ticks=900 v=5.932 shutdown=-1
+
+Measured numbers from the re-pointed stale tests:
+  AS4f wiring (re-pointed): slip=+0.2373 omega=22.898 demand=17918 adh=14481 del=14134.5 curve=14135.2
+  AS4f flat top (re-pointed): peak_omega=22.860 (one-tick; redline omega gear1=10.539, 1.5x=15.808) peak_slip=+0.2373 gear=1 high_omega_ticks=1 max_redline_streak=1 shutdown_tick=2 v_final=-0.0385 max_gear=2 upshift_tick=2 back_to_1_tick=3 final_gear=1
+  AS4e ice launch (re-pointed): peak_omega=22.860 peak_slip=+0.2374 max_adh=14481 max_del=14134.5 ratio=1.2373 max_abs_v=0.0385 engine_dead_at=2
+
+Reading:
+- Redline boundary (test 6): at 1799 rpm full throttle the per-wheel drive torque
+  is +26,942.3 Nm (1600 Nm engine x 4.834 gear 1 x 3.7 final x 1.0 efficiency);
+  at 1800 and 1850 it is exactly 0.0 -- the cut holds at and above the pinned
+  redline with no band.
+- Engine braking untouched (test 7): at 1900 rpm with throttle 0 the per-wheel
+  torque is -6,725.1 Nm, matching the analytic -engine_brake_torque_nm(1900) x
+  gear 1 x final drive x efficiency. A limiter that fired at closed throttle
+  would return 0.0 instead; it does not.
+- Dry launch (test 5): GUT-shaped 240-tick settle + 1200 full-throttle ticks
+  reach max_rpm 1551.6 < 1800, so the cut's gate never opens and the launch is
+  unchanged (6.839 m/s, gear 2).
+- Gradual spin-up (test 6, the brief's ice-limiter scenario re-pointed to where
+  the limiter is actually reachable): gear 1 locked, from 5.27 m/s (1600 rpm),
+  full throttle 900 ticks. rpm stays in a 1800-1802 limit cycle every tick, the
+  engine never shuts down, speed holds 5.93 m/s. This is the mechanism: the cut
+  removes the 1600 Nm the flat torque curve would otherwise apply at 1800-1900,
+  so the wheel cannot keep accelerating the engine through the redline.
+
+## Verification 2: the limiter works where it is reachable, and fails where it cannot reach
+
+Gradual spin-up (tests/scratch/as4h_gradual.gd: gear 1 locked, start 5.27 m/s =
+1600 rpm in gear 1, full throttle):
+
+  CUT ON:
+    GRAD t=0.0 rpm=1800 speed=5.933 run=true
+    GRAD t=1.0 rpm=1800 speed=5.923 run=true
+    GRAD t=2.0 rpm=1801 speed=5.926 run=true
+    GRAD t=3.0 rpm=1802 speed=5.927 run=true
+    GRAD t=4.0 rpm=1799 speed=5.930 run=true
+    GRAD t=5.0 rpm=1800 speed=5.932 run=true
+  CUT OFF (counterfactual):
+    GRAD t=0.0 rpm=1900 speed=6.444 run=false
+    GRAD t=1.0 rpm=0 speed=5.832 run=false
+    ... (engine dead at tick 150, coasts to 3.592 m/s)
+
+Same start, same inputs: with the cut the engine lives at the redline and the
+combination holds 5.93 m/s; without it the engine dies in 150 ticks and the
+combination coasts down to 3.59 m/s.
+
+From rest on ice, the cut cannot reach: the wheel's 2.0 kg.m^2 inertia spikes to
+22.86 rad/s on tick 1, the engine reads 1900 (clamped) on tick 2 and the shutdown
+fires on the same tick the gearbox upshifts -- before the cut can engage, and
+nothing restarts the engine afterwards. The one-tick transient also outruns the
+gear-1 redline omega of 10.539 rad/s (2.2x), so "omega bounded by redline x gear"
+is not the bound AS4g provides; the bound that holds is "one tick only" (high
+omega ticks = 1, redline streak = 1, then the engine is dead and the wheel is
+braked). Both facts are reported in the tests, not enforced.
+
+## Verification 3: dry is byte-identical
+
+GUT-shaped dry launch (tests/scratch/as4h_gutdry.gd, 240-tick settle + 1200
+full-throttle ticks):
+  CUT ON:  max_rpm=1551.6 (at tick 633) v_final=6.839 omega_final=12.142 rpm_final=1226 gear_final=2 run=true
+  CUT OFF: max_rpm=1551.6 (at tick 633) v_final=6.839 omega_final=12.142 rpm_final=1226 gear_final=2 run=true
+Byte-identical at full printed precision (the gate never opens: max rpm 1551.6
+< 1800). One of three cut-on runs printed 1551.7 / 12.143 at the last decimal;
+the other two cut-on runs and the cut-off run all printed 1551.6 / 12.142 --
+run-to-run noise at 7e-7 relative, far below the 0.3 percent gate.
+
+Spin probe (tests/scratch/wheel_spin_probe.gd), dry, after:
+  SPIN t=1.0 speed=2.02 omega=4.302 v_over_r=4.300 slip=+0.0004 rpm=839
+  SPIN t=2.0 speed=3.66 omega=8.187 v_over_r=8.181 slip=+0.0006 rpm=1081
+  SPIN t=3.0 speed=4.63 omega=10.733 v_over_r=10.727 slip=+0.0007 rpm=1223
+  SPIN t=4.0 speed=5.42 omega=12.870 v_over_r=12.864 slip=+0.0007 rpm=1337
+  SPIN t=5.0 speed=5.97 omega=14.510 v_over_r=14.504 slip=+0.0006 rpm=1418
+  SPIN t=6.0 speed=6.38 omega=15.736 v_over_r=15.730 slip=+0.0006 rpm=1481
+  SPIN t=7.0 speed=6.64 omega=16.678 v_over_r=16.672 slip=+0.0006 rpm=1527
+  SPIN t=8.0 speed=6.82 omega=17.382 v_over_r=17.376 slip=+0.0005 rpm=1562
+  SPIN t=9.0 speed=6.95 omega=17.917 v_over_r=17.911 slip=+0.0005 rpm=1589
+  SPIN t=10.0 speed=6.26 omega=11.120 v_over_r=11.115 slip=+0.0006 rpm=1122
+t=10.0 matches the AS4g reference (6.26 m/s, 11.120 rad/s, 1122 rpm) byte for
+byte (0.0 percent, well inside the 0.3 percent gate). (The t=10.0 row is the
+probe's decel-sample row: the probe brakes from t=9.0; the top-speed rows at
+t=8.0/9.0 show the launch itself.)
+
+Saturation probe dry t=0.0 (brake start), after:
+  SAT t=0.0 speed=2.64 omega=4.697 v_over_r=4.695 slip=-0.0029 abs=false normal_n=57093 adhesion_n=65657 brake_nm=12000 demand_n=21314
+Byte-identical to the AS4f reference row the brief pinned (speed=2.64, omega=4.697,
+slip=-0.0029, adhesion 65,657, demand 21,314).
+
+## Verification 4: ice tables, cut on vs cut off
+
+ICEG automatic and ICEG gear 5 (tables above) were each run with the cut in
+place and with the gate disabled; all 8 rows of each are byte-identical in both
+directions. The cut changes nothing on these runs because the only state it
+changes is the under-throttle rpm >= 1800 state, which the from-rest ice runs
+never hold (the engine is dead on tick 2 in gear 1 and never reaches 1800 in
+gear 5).
+
+Saturation probe ice (tests/scratch/wheel_saturation_probe.gd -- ice), after:
+  SAT t=0.0 speed=0.00 omega=2.167 v_over_r=0.000 slip=+2.167 abs=true normal_n=55177 adhesion_n=15848 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=-0.085 v_over_r=0.000 slip=-0.085 abs=false normal_n=57798 adhesion_n=16569 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.00 omega=-0.050 v_over_r=0.000 slip=-0.050 abs=false normal_n=58066 adhesion_n=16635 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=0.017 v_over_r=0.000 slip=+0.017 abs=false normal_n=58066 adhesion_n=16635 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.029 v_over_r=0.000 slip=-0.029 abs=false normal_n=58066 adhesion_n=16635 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=-0.045 v_over_r=0.000 slip=-0.045 abs=false normal_n=58066 adhesion_n=16635 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.00 omega=-0.016 v_over_r=0.000 slip=-0.016 abs=false normal_n=58066 adhesion_n=16635 brake_nm=12000 demand_n=21314
+The saturated drive tick (t=0.0, omega 2.167, slip +2.167, ABS true, delivered
+below adhesion 15,848 N) is followed by a bounded crawl -- the same bounded
+behaviour the unit tests assert.
+
+## Verification 5: smoke and yard
+
+Smoke (tests/sim/smoke_controls.tscn):
+  SMOKE actions=135 speed=0.052 gear=1 cameras=CAB,TRAILER,FREE,CHASE audio_samples=25200 audio_hiss=false
+  SMOKE OK
+
+Yard drive (tests/scratch/fps_probe.tscn, xvfb + llvmpipe):
+  DRIVE max_kmh=21.70 end_kmh=0.14 kingpin_err_m=0.008 articulation_deg=-0.02
+Matches docs/evidence/phase1/wheel_roll.txt exactly (21.70 km/h max, 0.008 m
+kingpin error).
+
+## Linters
+
+  gdformat --check scripts tests: every file clean except the pre-existing
+  gitignored tests/scratch/ice_gear_probe.gd (created by an earlier slice;
+  outside the files this brief names, left untouched). All files this slice
+  touched are clean.
+  gdlint scripts tests/unit tests/sim: Success: no issues found.
+
+## What this slice does and does not fix
+
+The fuel cut makes the pinned redline a mechanical boundary: under throttle the
+engine holds 1800-1802 rpm instead of running through the flat 1600 Nm band into
+the 1900 shutdown, and the pinned shutdown stays reachable only by external
+driveline drive (the one-tick startup transient). What it does not fix, stated
+plainly: a from-rest launch on ice in gear 1 still stalls the engine (dead on
+tick 2, no restart path, combination crawls at ~0.04 m/s). The startup transient
+outruns the cut -- the wheel spike is one tick and the shutdown clamps before the
+cut can engage -- and there is no restart path by design of this slice. That is
+the residual: the combination can still kill its engine if the driver floors it
+in a low gear on a low-grip surface; the limiter keeps every case the driver
+reaches while moving pinned at the redline instead of dead.
