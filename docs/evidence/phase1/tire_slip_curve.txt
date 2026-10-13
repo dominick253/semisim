@@ -1,0 +1,295 @@
+CITYHAUL AS4f: the saturated branch uses the spec's longitudinal mu-slip curve, and ABS releases
+===============================================================================================
+
+Repo state: on main at HEAD 95ab9f3 (after AS4e). This slice changes only
+scripts/vehicles/combination_controller.gd (the saturated branch and the ABS
+release move), tests/unit/test_tire_slip_curve.gd (new), this file, and one row
+(D50) in docs/DEVIATIONS.md. No PHYSICS_CONSTANTS value, the tire model, the
+friction ellipse, the ABS thresholds, the AS4e surface channel, or the AS4d
+no-slip assignment were touched.
+
+## The two measured defects
+
+1. The spec's longitudinal curve was dead code. scripts/physics/tire_model.gd
+   provides TireModel.longitudinal_force(kappa, fz, mu, braking), the Pacejka
+   formula with the spec-pinned cornering stiffness (TIRE_BX_DRIVE 12.0,
+   TIRE_BX_BRAKE 14.0, section 5.2). `grep -rn "longitudinal_force" scripts/`
+   found the definition and no caller. The saturated branch instead capped the
+   delivered force at adhesion = mu*fz, a constant with no slip dependence. On
+   ice (4 s full throttle) the drive omega ran to the 200 rad/s integrator
+   clamp and stayed there:
+
+       SAT t=0.0 speed=1.69 omega=200.000 v_over_r=3.010 slip=+65.4483 abs=true
+             adhesion_n=14389 demand_n=21314
+
+   A real spinning tyre moves down the mu-slip curve past its peak, so the
+   transmitted force falls as the wheel spins up and the spin is
+   self-limiting. With a flat cap there is no counter-force.
+2. The ABS release check lived inside the saturated branch, so once engaged it
+   stayed engaged: on ice the probe reported abs=true at every sample (t=1.0
+   through t=6.0) after the vehicle had stopped and slip was about 0.0000.
+
+## The change (scripts/vehicles/combination_controller.gd, _step_wheel)
+
+1. Saturated branch (absf(demand_n) > adhesion): the delivered force is now
+   TireModel.longitudinal_force(w.slip_ratio, fz, w.mu(), braking), where
+   braking = (demand_n * v_forward_wheel < 0.0) -- the demand opposes the
+   wheel's direction of travel (a drive demand and forward travel are same-sign,
+   a brake demand opposes them; at rest both are ~0 so the predicate is false,
+   i.e. the drive column). No clamp is applied on top: the curve is bounded by
+   its own peak (see the parent-review section). The old `adhesion * 0.85` ABS
+   modulation is dropped (D50): the curve's fall past its peak now does that
+   job physically.
+2. The ABS release check moved out of the saturated branch so it runs every
+   tick for a grounded wheel: abs_engaged clears when
+   absf(w.slip_ratio) < ABS_RELEASE_SLIP. The engage condition stays where it
+   was (inside the saturated branch).
+
+## Commands (run from /home/dom/dev/games/semisim)
+
+  timeout 500 godot-headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gdir=res://tests/unit -ginclude_subdirs -gexit
+  timeout 300 godot-headless --path . tests/sim/smoke_controls.tscn
+  timeout 300 godot-headless --path . -s res://tests/scratch/wheel_spin_probe.gd
+  timeout 300 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd
+  timeout 300 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd -- ice
+  timeout 300 godot-headless --path . tests/sim/probe_kingpin_window.tscn
+  timeout 300 godot-headless --path . tests/sim/probe_yaw_push.tscn
+  ~/.local/bin/gdformat --check scripts tests
+  ~/.local/bin/gdlint scripts tests/unit tests/sim
+
+## Unit suite
+
+The new tests/unit/test_tire_slip_curve.gd has five tests.
+RED (new file, original code, written first): 5 tests, 3 passing, 2 failing,
+  14/16 asserts.
+  - test 2 (curve is wired) fails: delivered 12247.1 N (flat cap) does not
+    match the curve 11662.3 N within 2 percent (5 percent off).
+  - test 4 (ABS releases) fails: abs_engaged stayed latched after the ice stop
+    (slip -0.0000, abs true).
+  - tests 1 (curve math), 3 (flat-top measurement), 5 (dry regression) pass.
+After (this slice): 5/5 passing, 16/16 asserts.
+
+Full unit suite (baseline 191 tests / 5162 asserts; nothing may fail):
+  Scripts 25, Tests 196, Passing 196, Failing 0, Asserts 5178.
+  196 = 191 + 5 new tests; 5178 = 5162 + 16 new asserts.
+
+Measured numbers from the passing run:
+  AS4f curve drive(Bx=12): peak_kappa=0.1730 (want 0.1709) peak_force=50000.0 at1.0=0.8718
+  AS4f curve brake(Bx=14): peak_kappa=0.1485 (want 0.1465) peak_force=50000.0 at1.0=0.8636
+  AS4f wiring: slip=49.2755 omega=200.000 demand=17918 adh=14394 del=11679.5 curve=11664.8
+  AS4f flat top: pk_delivered=14134.5 pk_omega=200.000 slip=49.2755 ratio=0.8114
+  AS4f abs: engage tick 0, release 118 into brake; e->r 718, slip=0.0452 abs=false
+  AS4f dry: v_final=6.00 m/s ticks=911 max|slip|=0.0094 abs_seen=false
+
+Reading:
+- Test 1: sampled peak kappa (0.1730 drive, 0.1485 brake) matches the analytic
+  peak tan(pi / (2 * TIRE_CX)) / Bx (0.17304, 0.14832); the peak force is
+  exactly mu*fz (50,000.0 N at fz 50,000 N, mu 1.0); at kappa 1.0 the curve is
+  0.8718 / 0.8636 of peak, matching sin(1.40 * atan(Bx)) (0.87181, 0.86357) --
+  deliberately flat past its peak. The parent's brief quoted 0.1709 / 0.1465
+  and 0.8674 / 0.8598, which were hand-computed and wrong; see the parent
+  review below.
+- Test 2: the saturated branch now delivers the curve (11679.5 N vs 11664.8 N,
+  0.13 percent), not the flat cap. On the flat cap it delivered 12247.1 N
+  (0.85 * adhesion), 5 percent off the curve.
+- Test 3 (honest scope): the curve alone does NOT stop the ice runaway. Peak
+  omega still hits the 200 rad/s clamp (200.000) and peak slip is 49.28; at
+  that slip the curve delivers 0.8114 of peak (about 81 percent, the "about 82
+  percent" the brief expected), so the transmitted force stays large. The
+  runaway is fixed in AS4g (engine rpm follows wheel speed while saturated),
+  not here. No clamp was added to make it pass.
+- Test 4: ABS engaged at drive tick 0 and released 118 ticks into the brake
+  (engagement-to-release 718 ticks), once |slip| fell below ABS_RELEASE_SLIP;
+  final slip 0.0452, abs=false. (Before: abs stayed true at every sample.)
+- Test 5: the dry launch is untouched (final speed 6.00 m/s at 911 ticks, max
+  |slip| 0.0094, ABS never engaged). The launch-to-6.0 m/s target is used
+  because the brief's "360 ticks" reaches only ~2.4 m/s; reaching the AS4e
+  measured 6.26 m/s dry speed needs ~900-1100 ticks.
+
+## Saturation probe: dry versus ice, before (AS4e) and after (this slice)
+
+tests/scratch/wheel_saturation_probe.gd: settle 1 s, drive 4 s at throttle 1.0,
+then "brake" pinned for 6 s; t=0.0 is brake start. "demand" is the probe's
+brake-only column, brake_nm / radius (12,000 / 0.563). Note: the probe sets
+c.brake, not the controller's brake_pedal, so its brake phase is a coast; that
+is inherited from the AS4e probe and is exactly what makes the ABS release
+observable (the wheel regrips by engine braking).
+
+DRY before (AS4e):
+  SAT t=0.0 speed=2.65 omega=4.711 v_over_r=4.709 slip=-0.0029 abs=false normal_n=57090 adhesion_n=65654 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=0.022 v_over_r=0.000 slip=+0.0062 abs=false normal_n=57544 adhesion_n=66176 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.00 omega=-0.037 v_over_r=0.000 slip=-0.0133 abs=false normal_n=57964 adhesion_n=66659 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0279 abs=false normal_n=57707 adhesion_n=66364 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.004 v_over_r=0.000 slip=-0.0006 abs=false normal_n=59551 adhesion_n=68483 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=0.022 v_over_r=0.000 slip=+0.0110 abs=false normal_n=57907 adhesion_n=66593 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.05 omega=-0.048 v_over_r=0.094 slip=+0.0064 abs=false normal_n=60855 adhesion_n=69984 brake_nm=12000 demand_n=21314
+
+DRY after (this slice):
+  SAT t=0.0 speed=2.64 omega=4.697 v_over_r=4.695 slip=-0.0029 abs=false normal_n=57093 adhesion_n=65657 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=-0.013 v_over_r=0.000 slip=-0.0039 abs=false normal_n=58751 adhesion_n=67564 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.05 omega=-0.018 v_over_r=0.090 slip=-0.0078 abs=false normal_n=59834 adhesion_n=68809 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.08 omega=-0.028 v_over_r=0.144 slip=-0.0011 abs=false normal_n=62553 adhesion_n=71936 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.003 v_over_r=0.000 slip=+0.0272 abs=false normal_n=57542 adhesion_n=66173 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=0.053 v_over_r=0.000 slip=+0.0186 abs=false normal_n=57282 adhesion_n=65874 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.00 omega=-0.004 v_over_r=0.000 slip=-0.0028 abs=false normal_n=58624 adhesion_n=67418 brake_nm=12000 demand_n=21314
+
+ICE before (AS4e):
+  SAT t=0.0 speed=1.69 omega=200.000 v_over_r=3.010 slip=+65.4483 abs=true normal_n=57557 adhesion_n=14389 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=-0.001 v_over_r=0.000 slip=-0.0000 abs=true normal_n=58745 adhesion_n=14686 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=true normal_n=58084 adhesion_n=14521 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=-0.0000 abs=true normal_n=57987 adhesion_n=14497 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=-0.0000 abs=true normal_n=57978 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=-0.0000 abs=true normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=true normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+
+ICE after (this slice):
+  SAT t=0.0 speed=1.61 omega=200.000 v_over_r=2.854 slip=+69.0761 abs=true normal_n=57575 adhesion_n=14394 brake_nm=12000 demand_n=21314
+  SAT t=1.0 speed=0.00 omega=-0.001 v_over_r=0.000 slip=-0.0000 abs=false normal_n=58702 adhesion_n=14675 brake_nm=12000 demand_n=21314
+  SAT t=2.0 speed=0.00 omega=-0.001 v_over_r=0.000 slip=+0.0000 abs=false normal_n=58080 adhesion_n=14520 brake_nm=12000 demand_n=21314
+  SAT t=3.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57986 adhesion_n=14496 brake_nm=12000 demand_n=21314
+  SAT t=4.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=5.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+  SAT t=6.0 speed=0.00 omega=-0.002 v_over_r=0.000 slip=+0.0000 abs=false normal_n=57977 adhesion_n=14494 brake_nm=12000 demand_n=21314
+
+Reading:
+- Dry: the change is a no-op. The 21,314 N demand never reaches the ~65,654 N
+  adhesion, so the saturated branch never runs and ABS never engages; the
+  delivered force is the gripping value either way. The hard comparison point,
+  t=0.0 (brake start), matches the AS4e numbers on the original code (2.65 m/s,
+  4.711 rad/s, 57,090 N normal, -0.0029 slip) byte-for-byte.
+- Ice: the delivered force is now the curve. At t=0.0 (brake start, the
+  drive-phase residual) the slip is +69.08 (was +65.45): the curve delivers
+  slightly less counter-force than the flat cap at high slip, so the wheel
+  spun up a little faster during the 4 s drive. The omega clamp (200 rad/s) is
+  still reached -- the AS4g item, reported, not forced down. The key fix: ABS
+  now RELEASES. Before, abs=true at every sample (t=0.0..t=6.0); after,
+  abs=true at t=0.0 only, and abs=false from t=1.0 once the wheel regripped
+  (|slip| fell below ABS_RELEASE_SLIP).
+
+## Dry regression: wheel_spin_probe, 10 s full-throttle launch (this slice)
+
+  SPIN t=0.0 speed=0.06 m/s omega=-0.067 rad_s drive_slip=0.0002 rpm=700 node_spin=0.0 deg
+  SPIN t=1.0 speed=0.70 m/s omega=1.267 rad_s drive_slip=-0.0072 rpm=700 node_spin=28.2 deg
+  SPIN t=2.0 speed=1.38 m/s omega=2.440 rad_s drive_slip=-0.0047 rpm=700 node_spin=116.4 deg
+  SPIN t=3.0 speed=2.02 m/s omega=3.585 rad_s drive_slip=-0.0030 rpm=700 node_spin=98.6 deg
+  SPIN t=4.0 speed=2.65 m/s omega=4.711 rad_s drive_slip=-0.0029 rpm=804 node_spin=96.6 deg
+  SPIN t=5.0 speed=3.64 m/s omega=6.470 rad_s drive_slip=-0.0031 rpm=1105 node_spin=1.6 deg
+  SPIN t=6.0 speed=4.76 m/s omega=8.461 rad_s drive_slip=-0.0023 rpm=1445 node_spin=4.5 deg
+  SPIN t=7.0 speed=5.31 m/s omega=9.428 rad_s drive_slip=-0.0006 rpm=952 node_spin=65.6 deg
+  SPIN t=8.0 speed=5.63 m/s omega=9.999 rad_s drive_slip=-0.0006 rpm=1009 node_spin=164.6 deg
+  SPIN t=9.0 speed=5.96 m/s omega=10.581 rad_s drive_slip=-0.0005 rpm=1068 node_spin=63.8 deg
+  SPIN t=10.0 speed=6.26 m/s omega=11.125 rad_s drive_slip=-0.0005 rpm=1123 node_spin=89.5 deg
+
+Versus AS4e (docs/evidence/phase1/wheel_surfaces.txt, t=1..10): the slip column
+is identical; speed differs by at most 0.01 m/s and omega by at most 0.021
+rad/s, within the 0.3 percent the brief specifies (the process-frame mapping
+drifts by one tick between runs). The dry launch is untouched.
+
+## Kingpin window (before == after, byte-identical)
+
+  pitch_deg=0.0 roll_deg=0.0 torque=20000000.0 shares=95942.0
+    steer kg=6601.0 cap=7711.0 ok=true
+    steer live=64753.0 static=68006.0 ratio=0.95
+    drive live=115858.0 static=110340.0 ratio=1.05
+    bogie live=166338.0 static=168928.0 ratio=0.98
+    kp_gap=0.008 tr_pitch=-0.0003 t_pitch=0.0023 tr_roll=-0.0001 sumN/weight=0.999
+
+## Yaw push (before == after, byte-identical)
+
+  torque=500000.0 before=0.0 during=0.004 delta_deg=0.23 kp_gap=0.009
+     after release: artic_deg=0.23 kp_gap=0.009
+  torque=2000000.0 before=0.0 during=0.2573 delta_deg=14.74 kp_gap=0.26
+     after release: artic_deg=29.1 kp_gap=0.507
+  torque=5000000.0 before=0.0 during=1.0199 delta_deg=58.44 kp_gap=0.975
+     after release: artic_deg=-56.66 kp_gap=0.951
+  torque=20000000.0 before=0.0 during=-0.3498 delta_deg=-20.04 kp_gap=1.114
+     after release: artic_deg=132.44 kp_gap=2.828
+  torque=50000000.0 before=0.0 during=-0.966 delta_deg=-55.35 kp_gap=2.958
+     after release: artic_deg=17.04 kp_gap=0.737
+
+## Smoke (before == after, byte-identical)
+
+  SMOKE actions=135 speed=0.052 gear=1 cameras=CAB,TRAILER,FREE,CHASE audio_samples=25200 audio_hiss=false
+  SMOKE OK
+
+The smoke's braking is on the dry ground and grips, so the saturated branch
+never runs and the run is unchanged.
+
+## Formatting and lint
+
+  ~/.local/bin/gdformat --check scripts tests
+    -> 144 files would be left unchanged.
+  ~/.local/bin/gdlint scripts tests/unit tests/sim
+    -> Success: no problems found
+
+## Diff (no git run per the brief; the parent's review sees the git diff)
+
+Saturated branch + ABS release move in _step_wheel:
+
+     # Friction limit and ABS (section 5.2).
+     var delivered_n: float = demand_n
+     if absf(demand_n) > adhesion:
+     	var over: float = absf(demand_n) / maxf(adhesion, 1.0) - 1.0
+     	w.slip_ratio = (
+     		signf(w.slip_ratio if absf(w.slip_ratio) > 0.0 else demand_n)
+     		* maxf(absf(w.slip_ratio), over)
+     	)
+    -	delivered_n = adhesion * signf(demand_n)
+    +	var braking: bool = demand_n * v_forward_wheel < 0.0
+    +	delivered_n = TireModel.longitudinal_force(w.slip_ratio, fz, mu, braking)
+    	if absf(w.slip_ratio) > PHYSICS_CONSTANTS.ABS_ENGAGE_SLIP:
+    		w.abs_engaged = true
+    -	if w.abs_engaged and absf(w.slip_ratio) < PHYSICS_CONSTANTS.ABS_RELEASE_SLIP:
+    -		w.abs_engaged = false
+    -	if w.abs_engaged:
+    -		delivered_n = adhesion * 0.85 * signf(demand_n)
+    +	if w.abs_engaged and absf(w.slip_ratio) < PHYSICS_CONSTANTS.ABS_RELEASE_SLIP:
+    +		w.abs_engaged = false
+
+     w.last_longitudinal_n = delivered_n
+
+(Comments omitted in this abridged diff; they document the braking predicate,
+the structural bound that makes a clamp unnecessary, and the release move. This
+is the final state after the parent review below.)
+
+## Parent review (post-slice, this commit)
+
+1. Re-ran the gates independently: import 0 ERROR/WARNING lines; unit suite
+   Scripts 25, Tests 196, Passing 196, Failing 0, Asserts 5178; spin probe dry
+   t=8.0 speed=5.63 omega=9.999 slip=-0.0006 node_spin=164.6 deg and t=10.0
+   speed=6.26 omega=11.125 slip=-0.0005 node_spin=89.5 deg (matches AS4d);
+   saturation dry t=0.0 speed=2.64 slip=-0.0029 adhesion 65,657 N vs demand
+   21,314 N abs=false; saturation ice t=0.0 omega=200.000 slip=+69.21 abs=true
+   then t=1.0..6.0 abs=false. gdformat 144 files unchanged, gdlint clean.
+2. Dead-code audit removed two branches the slice introduced:
+   - `delivered_n = clampf(delivered_n, -adhesion, adhesion)`. Provably dead:
+     the curve is mu*fz * sin(TIRE_CX * atan(Bx * kappa)); with TIRE_CX 1.40 the
+     argument spans +/- 2.199 rad, so sin() reaches 1 at kappa 0.1730 (drive) /
+     0.1483 (brake) and cannot exceed it, so delivered_n never passes adhesion.
+   - the small-slip demand-sign guard that zeroed delivered_n. Instrumented it
+     with a print and counted fires: 0 in the ice saturation probe, 0 in the dry
+     saturation probe, 0 in the spin probe, 0 in probe_yaw_push, and 0 across the
+     whole 196-test unit suite. Unreachable, and where it could fire (a wheel
+     still spinning up under brake torque) the curve's sign is the physically
+     correct force direction, so the guard would have suppressed a real transient
+     force. Both removals left the spin, saturation and suite numbers unchanged
+     within the run-to-run tick drift, which is the expected result for dead code.
+3. Corrected the brief's pinned curve constants, which the child's measurement
+   exposed as wrong: analytic peak kappa is tan(pi / (2 * TIRE_CX)) / Bx =
+   0.17304 (drive) and 0.14832 (brake), not 0.1709 / 0.1465, and the curve at
+   kappa 1.0 is 0.87181 / 0.86357 of peak, not 0.8674 / 0.8598. The child's
+   sampled values were right; the brief's 0.005 tolerance had hidden the parent's
+   arithmetic error. tests/unit/test_tire_slip_curve.gd now pins 0.1730 / 0.1483
+   and 0.8718 / 0.8636 with 0.001 tolerance, and passes:
+   peak_kappa=0.1730 (want 0.1730) and peak_kappa=0.1485 (want 0.1483),
+   at1.0=0.8718 and 0.8636.
+
+## Measurement pitfall
+
+The SAT probe's brake-phase samples (t=1.0+) have run-to-run tick drift: two
+runs of the identical original code differ at t=2.0 (omega -0.037 vs +0.010,
+normal_n 57964 vs 58763), so the once-per-second brake samples are not a
+byte-comparison point. The dry LAUNCH is the reliable dry comparison (spin
+probe above, matches AS4e within 0.3 percent), and the SAT t=0.0 (brake start)
+is the hard comparison point (byte-identical to AS4e on the original code).

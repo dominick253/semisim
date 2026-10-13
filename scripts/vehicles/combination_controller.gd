@@ -559,13 +559,34 @@ func _step_wheel(
 			signf(w.slip_ratio if absf(w.slip_ratio) > 0.0 else demand_n)
 			* maxf(absf(w.slip_ratio), over)
 		)
-		delivered_n = adhesion * signf(demand_n)
+		# AS4f: the flat adhesion cap is replaced by the spec's longitudinal
+		# mu-slip curve (section 5.2), so the delivered force tracks the
+		# wheel's slip instead of holding a constant. Past the curve's peak the
+		# force falls, giving the counter-force that makes a spinning wheel
+		# self-limiting. The old `adhesion * 0.85` ABS modulation is dropped:
+		# the curve's fall past its peak now does that job physically.
+		# `braking` selects the Bx column: the demand opposes the wheel's
+		# direction of travel when demand_n * v_forward_wheel < 0 (a drive
+		# demand and forward travel are same-sign; a brake demand opposes
+		# forward travel). Deterministic: at rest both factors are ~0 and the
+		# predicate is false (drive column).
+		var braking: bool = demand_n * v_forward_wheel < 0.0
+		delivered_n = TireModel.longitudinal_force(w.slip_ratio, fz, mu, braking)
+		# No clamp needed: the curve is bounded by its own peak. With
+		# TIRE_CX = 1.40 the argument Cx * atan(Bx * kappa) spans only
+		# +/- 2.199 rad, so sin() reaches 1 exactly at
+		# kappa = tan(pi / (2 * TIRE_CX)) / Bx (0.1730 drive, 0.1483 brake)
+		# and never exceeds it. delivered_n therefore cannot pass mu * fz,
+		# which is `adhesion` here. A clamp on top of that would be dead code.
 		if absf(w.slip_ratio) > PHYSICS_CONSTANTS.ABS_ENGAGE_SLIP:
 			w.abs_engaged = true
-		if w.abs_engaged and absf(w.slip_ratio) < PHYSICS_CONSTANTS.ABS_RELEASE_SLIP:
-			w.abs_engaged = false
-		if w.abs_engaged:
-			delivered_n = adhesion * 0.85 * signf(demand_n)
+	# ABS release runs every tick for a grounded wheel, not only while
+	# saturated: at rest the engine-brake demand is below adhesion, so the wheel
+	# sits in the gripping branch and a release check inside the saturated
+	# branch would never run, leaving abs_engaged latched after the vehicle
+	# stops (AS4f defect 2).
+	if w.abs_engaged and absf(w.slip_ratio) < PHYSICS_CONSTANTS.ABS_RELEASE_SLIP:
+		w.abs_engaged = false
 
 	w.last_longitudinal_n = delivered_n
 	var fy_avail: float = TireModel.lateral_available(fz, mu, delivered_n)
