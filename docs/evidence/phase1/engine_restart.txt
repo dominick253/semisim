@@ -1,0 +1,227 @@
+CITYHAUL AS4j2: give the pinned restart path its caller
+========================================================
+
+Repo state: main at HEAD 35f6d0b, clean tree at start. Touched files:
+scripts/vehicles/combination_controller.gd (restart rule in _step after the
+1900 rpm shutdown; dead `_point_velocity` helper removed to fund the addition
+under the <1000 line gate), scripts/physics/air_system.gd (restart release
+latch, `_restart_released`), tests/unit/test_engine_restart.gd (new, 4 tests),
+tests/unit/test_wheel_surfaces.gd (stale "no restart path" comment re-pointed),
+tests/scratch/engine_restart_probe.gd (new probe, gitignored),
+docs/DEVIATIONS.md (rows D54, D55 and the index sentence), this file. No
+PHYSICS_CONSTANTS value added or changed; no new input action.
+
+Defects fixed
+-------------
+1. The spec pins the restart path twice (5.4: the spring brake holds "until
+   pressure recovers above 60 psi or the engine is restarted"; section 6:
+   "Recovery only via restart"), but AirSystem.restart_engine() had zero
+   production callers and combination_controller.gd set engine_running = false
+   at the 1900 rpm shutdown with nothing ever setting it true again: one
+   over-rev was a permanently dead truck with a stopped compressor.
+2. restart_engine() set spring_brake_engaged = false and then called
+   _refresh_state(), which re-engaged the brake unconditionally below 40 psi:
+   at any pressure below 40 psi the restart cancelled its own release. The
+   sub-40 psi engage is now suppressed while a restart release latch
+   (_restart_released) is active, and the latch clears once the pressure
+   recovers past the 60 psi release point, so a later sub-40 psi drop
+   re-engages the brake. The no-restart ladder is byte-identical (T9/T10
+   unchanged) and the engine-running 30 psi engage that the audio hiss test
+   encodes still fires.
+
+The restart rule (combination_controller.gd, _step, immediately after the
+shutdown check)
+-------------------------------------------------------
+  if not engine_running and engine_rpm <= PHYSICS_CONSTANTS.ENGINE_IDLE_RPM and throttle <= 0.0:
+      engine_running = true
+      air.restart_engine()
+
+DrivelineModel.engine_rpm_from_wheel_rate clamps to at least idle, so
+engine_rpm <= ENGINE_IDLE_RPM means both the wheel side and the vehicle side
+have fallen to the idle floor (the combination is essentially stopped), and
+throttle <= 0.0 stops the rule re-firing straight back into the over-rev that
+killed it. The check runs after the shutdown, so the shutdown wins on the
+killing tick (1900 rpm, far above idle). D54.
+
+Probe: tests/scratch/engine_restart_probe.gd
+--------------------------------------------
+Settle the rest harness (throttle 0 during the settle), force
+c.engine_running = false once, then 30 s in locked gear 1: throttle 1.0 for
+the first 10 s, released for the remaining 20 s. The split is deliberate: the
+restart rule requires the throttle released, so a pure 30 s hold can never
+show the restart landing; the first 10 s prove the hold blocks the restart
+(test 2's condition) and the release shows it land (test 1's condition).
+
+Pre-fix (dead truck for all 30 s; 0.02-0.04 m/s is the settle-phase residual
+drift decaying under rolling resistance):
+
+  RSTR shutdown at t=0.000 s (forced)
+  RSTR t=5.0 speed=0.04 rpm=700 run=false gear=1 psi=100.0 spring=false
+  RSTR t=10.0 speed=0.03 rpm=700 run=false gear=1 psi=100.0 spring=false
+  RSTR t=15.0 speed=0.03 rpm=700 run=false gear=1 psi=100.0 spring=false
+  RSTR t=20.0 speed=0.03 rpm=700 run=false gear=1 psi=100.0 spring=false
+  RSTR t=25.0 speed=0.03 rpm=700 run=false gear=1 psi=100.0 spring=false
+  RSTR t=30.0 speed=0.02 rpm=700 run=false gear=1 psi=100.0 spring=false
+
+Post-fix (dead while the throttle is held; the restart lands on the first
+physics step after the release, frame SETTLE+1200 = t 10.000 s; after that
+the speed creep is the pre-existing parked-truck behaviour):
+
+  RSTR shutdown at t=0.000 s (forced)
+  RSTR t=5.0 speed=0.04 rpm=700 run=false gear=1 psi=100.0 spring=false
+  RSTR t=10.0 speed=0.03 rpm=700 run=false gear=1 psi=100.0 spring=false
+  RSTR RESTART landed in the physics step of frame 1440 (t=10.000 s)
+  RSTR t=15.0 speed=0.11 rpm=700 run=true gear=1 psi=100.0 spring=false
+  RSTR t=20.0 speed=0.15 rpm=700 run=true gear=1 psi=100.0 spring=false
+  RSTR t=25.0 speed=0.18 rpm=700 run=true gear=1 psi=100.0 spring=false
+  RSTR t=30.0 speed=0.20 rpm=700 run=true gear=1 psi=100.0 spring=false
+
+(the post-restart creep is the pre-existing parked-truck behaviour: an
+engine running at rest with the throttle released, see the zz drift
+investigation during this session; not introduced by the restart rule)
+
+Commands (run from /home/dom/dev/games/semisim)
+------------------------------------------------
+  timeout 300 godot-headless --path . -s res://tests/scratch/engine_restart_probe.gd
+  timeout 550 godot-headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gdir=res://tests/unit -ginclude_subdirs -gexit
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_spin_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/wheel_saturation_probe.gd
+  timeout 120 godot-headless --path . -s res://tests/scratch/ice_gear_probe.gd
+  timeout 300 godot-headless --path . tests/sim/smoke_controls.tscn
+  timeout 300 godot-headless --path . res://tests/sim/probe_kingpin_window.tscn
+  ~/.local/bin/gdformat --check scripts tests
+  ~/.local/bin/gdlint scripts tests/unit tests/sim
+  wc -l scripts/vehicles/combination_controller.gd
+
+GUT: RED, then GREEN
+--------------------
+RED (fixes not yet applied; the two failing tests are the two defects):
+
+  AS4j2 restart at rest: first_running_tick=-1 (window 360) rpm=700.0
+  AS4j2 held throttle: run_ticks=0 of 600 (throttle 1.0)
+  AS4j2 air pre:  pressure=30.0 state=2 engaged=true
+  AS4j2 air post: pressure=30.0 state=2 engaged=true
+  AS4j2 dry: v_final=2.3772 m/s dead_ticks=0 max_slip=0.0094 (360 ticks)
+  Scripts              28
+  Tests               214
+  Passing Tests       212
+  Failing Tests         2
+  Asserts           5240/5245
+  ---- 2 failing tests ----
+    test_shutdown_at_rest_restarts_within_3_s:
+      [Failed]: [-1] expected to be >= than [1]: engine never restarted within
+                3 s of a forced shutdown at rest, throttle 0.0
+      [Failed]: engine not running at the end of the 3 s window
+    test_restart_engine_releases_the_spring_brake_below_40_psi:
+      [Failed]: spring brake re-engaged below 40 psi: the restart undid its
+                own release (defect 2)
+      [Failed]: [2] expected to not equal [2]: state must not stay
+                SPRING_BRAKE while spring_brake_engaged is false
+      [Failed]: [2] expected to equal [1]: 30 psi is below the 60 psi warning
+                threshold: state must be WARNING (got 2)
+
+GREEN (after both fixes; 214 = 210 baseline + 4 new tests):
+
+  AS4j2 restart at rest: first_running_tick=1 (window 360) rpm=700.0
+  AS4j2 held throttle: run_ticks=0 of 600 (throttle 1.0)
+  AS4j2 air pre:  pressure=30.0 state=2 engaged=true
+  AS4j2 air post: pressure=30.0 state=1 engaged=false
+  AS4j2 dry: v_final=2.3772 m/s dead_ticks=0 max_slip=0.0094 (360 ticks)
+  Scripts              28
+  Tests               214
+  Passing Tests       214
+  Asserts            5245
+  ---- All tests passed! ----
+
+Suite run count, stated plainly: three full runs plus one parse check. The
+parse check (first run) happened before the RED run because the new test file
+used assert_ge, which GUT 9.6.1 does not have (the function is assert_gte);
+the file failed to parse and was excluded from that run, which returned the
+untouched baseline (27 scripts, 210 tests, 210 passing, 5233 asserts) -- a
+useful baseline re-confirmation. The first GREEN attempt then surfaced a
+genuine cross-test regression (test_audio_director: the spring-brake hiss
+test drops the pressure to 30 psi with the engine running and expects the
+brake to engage), which is why the release is a latch (D55) rather than an
+engine-state gate: the spec's "applies automatically below 40 psi" is
+unconditional, and only the restart release must survive the sub-40 window.
+The final GREEN above is the one that counts.
+
+Air state machine, standalone trace (throwaway probe, since removed)
+---------------------------------------------------------------------
+  T9: reached100_at=45.5s engaged_near39=true state_near59=2
+  T10a: p=59.0 warn=true state=1
+  T10b: p=39.0 engaged=true state=2
+  A pre:  p=30.0 state=2 engaged=true
+  A post: p=30.0 state=1 engaged=false running=true
+  A refilled: p=100.0 state=0 engaged=false (state at 60 psi: 0)
+  A re-drop: p=30.0 engaged=true state=2
+  B audio: p=30.04 engaged=true state=2
+  C healthy: p=100.0 state=0 engaged=false
+  D pre:  p=50.0 state=1 engaged=false
+  D post: p=35.0 state=1 engaged=false
+
+(A = the new unit test 3 plus refill and re-drop; B = the audio test's
+scenario, engine running, pressure forced to 30: still engages; C = restart
+at healthy pressure: inert; D = restart at 50 psi then a 35 psi drop: the
+release persists, state WARNING.)
+
+Gate measurements (all post-fix, single process each)
+-----------------------------------------------------
+wheel_spin_probe.gd dry t=10.0 (gate: within 0.5 percent of 6.26 m/s,
+11.125 rad/s, 1123 rpm; the brief's second process gave 11.120/1122):
+  SPIN t=10.0 speed=6.26 m/s omega=11.125 rad_s drive_slip=-0.0005 rpm=1123
+  0.0 percent off the primary baseline on all three numbers (this process).
+
+wheel_saturation_probe.gd dry t=0.0 (gate: within 0.5 percent of 2.65 m/s,
+4.711 rad/s, slip -0.0029, normal 57,090 N, adhesion 65,654 N, demand 21,314
+N, abs=false; the brief's second process gave 2.64 / 4.697 / 65,657):
+  SAT t=0.0 speed=2.64 omega=4.697 v_over_r=4.695 slip=-0.0029 abs=false
+        normal_n=57093 adhesion_n=65657 brake_nm=12000 demand_n=21314
+  speed 0.38 percent off primary (2.65), omega 0.30 percent off primary
+  (4.711), normal 0.005 percent off, adhesion 0.005 percent off, demand and
+  slip identical; matches the brief's second-process baseline (2.64 / 4.697 /
+  65,657). Inside the 0.5 percent gate.
+
+ice_gear_probe.gd (gate: run=true on every tick; the restart rule must not
+fire there):
+  ICEG t=1.0 gear=1 rpm=700  run=true omega=2.346  speed=0.45 abs=true
+  ICEG t=2.0 gear=1 rpm=1024 run=true omega=10.479 speed=0.90 abs=true
+  ICEG t=3.0 gear=1 rpm=1330 run=true omega=8.148  speed=1.34 abs=true
+  ICEG t=4.0 gear=1 rpm=1379 run=true omega=8.437  speed=1.75 abs=true
+  ICEG t=5.0 gear=1 rpm=1088 run=true omega=6.703  speed=2.12 abs=true
+  ICEG t=6.0 gear=2 rpm=700  run=true omega=4.330  speed=2.44 abs=false
+  ICEG t=7.0 gear=2 rpm=700  run=true omega=4.718  speed=2.66 abs=false
+  ICEG t=8.0 gear=2 rpm=700  run=true omega=5.075  speed=2.86 abs=false
+  run=true on every tick (the engine never dies on ice at this HEAD, so the
+  rule's `not engine_running` gate never opens); speed 0.45 to 2.86 m/s and
+  the 1 -> 2 gear hunt match the baseline; rpm spans 700-1379 on the 1 s
+  sample grid (baseline stated 700-1790; the launch is a saturated
+  sawtooth, so the sample-grid rpm peak varies between processes while the
+  speed endpoints and gear sequence hold).
+
+Smoke and yard:
+  SMOKE actions=135 speed=0.052 gear=1 cameras=CAB,TRAILER,FREE,CHASE
+        audio_samples=25200 audio_hiss=false
+  SMOKE OK
+  (byte-identical to the baseline)
+  kp_gap=0.008 tr_pitch=-0.0003 t_pitch=0.0023 tr_roll=-0.0001 sumN/weight=0.999
+  (kp_gap 0.008, identical to the baseline)
+
+Linters and size:
+  gdformat --check scripts tests: 155 files would be left unchanged
+  gdlint scripts tests/unit tests/sim: Success: no problems found
+  wc -l scripts/vehicles/combination_controller.gd: 997 (under 1000; was 998)
+  (the restart rule adds 10 lines; the dead _point_velocity helper, zero
+  callers anywhere in the tree, removed 9)
+
+Follow-ups (recorded, not fixed)
+--------------------------------
+1. AirSystem.consume_psi() has no production caller, so pressure never falls
+   in play and the 60/40 psi ladder is still decorative: the only live air
+   state transition in play is the refill in step(). Related latent coupling:
+   air.engine_running is never set false by the controller on shutdown (only
+   reset() and restart_engine() write it), so the sub-40 psi re-engage while
+   the engine is actually off is reachable only through test code until
+   consume_psi gets a caller.
+2. jackknifed latches with no release path.

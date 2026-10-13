@@ -307,8 +307,10 @@ func test_ice_launch_saturates_the_drive_tyre_and_engages_abs() -> void:
 	# AS4i re-point (was "engine dead on tick 2, reported per brief rule 3"):
 	# the one-tick transient that drove the engine through the 1800-1900
 	# window is gone (D53 reflected engine-side inertia), so the engine is
-	# alive at the end of the launch (measured running=true; pre-AS4i
-	# dead on tick 2, no restart path).
+	# alive at the end of the launch (measured running=true; pre-AS4i dead on
+	# tick 2 -- and permanent, since AS4j2 added the restart rule (D54), so a
+	# dead engine now recovers once rpm is back at the idle floor and the
+	# throttle is released).
 	assert_true(
 		c.engine_running,
 		(

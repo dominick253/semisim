@@ -342,6 +342,16 @@ func _step(dt: float) -> void:
 	air.step(dt, engine_rpm if engine_running else 0.0)
 	if engine_rpm >= PHYSICS_CONSTANTS.ENGINE_SHUTDOWN_RPM:
 		engine_running = false
+	# AS4j2 restart rule (D54): spec 5.4 / section 6 pin the restart path
+	# ("or the engine is restarted", "Recovery only via restart") but not the
+	# trigger. DrivelineModel.engine_rpm_from_wheel_rate clamps to at least
+	# idle, so rpm <= idle means both rpm paths are at the idle floor
+	# (combination stopped); throttle <= 0.0 stops the rule re-firing into
+	# the over-rev that killed it. After the shutdown above, so the shutdown
+	# wins on the killing tick (1900 rpm, far above idle).
+	if not engine_running and engine_rpm <= PHYSICS_CONSTANTS.ENGINE_IDLE_RPM and throttle <= 0.0:
+		engine_running = true
+		air.restart_engine()
 
 	# 3. Articulation state.
 	var artic_rad: float = articulation_rad()
@@ -415,17 +425,6 @@ func _step(dt: float) -> void:
 		trailer.angular_velocity = Vector3.ZERO
 
 	_update_vehicle_state(speed)
-
-
-func _point_velocity(body: RigidBody3D, global_point: Vector3) -> Vector3:
-	## Godot 4.7 RigidBody3D has no get_velocity_at_point, so the rigid body
-	## velocity at an offset is computed directly.
-	## The lever arm has to be measured from the body's actual center of mass:
-	## both bodies run with CENTER_OF_MASS_MODE_CUSTOM, so global_position is the
-	## scene origin, not the CoM.
-	return (
-		body.linear_velocity + body.angular_velocity.cross(global_point - body.get_center_of_mass())
-	)
 
 
 func _step_wheel(
