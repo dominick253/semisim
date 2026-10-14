@@ -7,6 +7,21 @@ extends Node3D
 ## immediately after add_child, so every reference has to be resolved during
 ## node entry. settle() and push_* are the awaitable parts.
 
+## Ground half-extent (m) -- the top of the ground box sits at y = 0 and spans
+## +/- _GROUND_HALF_EXTENT_M in x and z (AS4l2, D57-adjacent).
+##
+## Sizing arithmetic: the longest planned run is 30 s (the downshift and
+## stop-distance probes) at the probe speed v_max = 22.2222 m/s (80 km/h), so
+## worst-case distance = v_max x t = 22.2222 x 30 = 666.67 m. The tractor's
+## leading point (steer axle, 6.5 m ahead of the drive-axle origin) therefore
+## reaches at most 666.67 + 6.5 = 673.17 m, and the rearmost trailer point
+## (+12.75 m behind the origin) stays well inside that. The 1200-step city
+## golden run (10 s) covers only 222.2 m. 800 m keeps every planned run at
+## least ~127 m from the edge. The previous 150 m half-extent let the 30 s
+## downshift probe cross z = -150 at t = 12 s and fall, reporting bogus
+## free-fall numbers (suspension work -31.37 MJ in one second, then flat).
+const _GROUND_HALF_EXTENT_M: float = 800.0
+
 var controller: Node3D
 var tractor: RigidBody3D
 var trailer: RigidBody3D
@@ -35,7 +50,7 @@ func _ready() -> void:
 	floor_body.collision_mask = 3
 	var fshape := CollisionShape3D.new()
 	var fbox := BoxShape3D.new()
-	fbox.size = Vector3(300.0, 2.0, 300.0)
+	fbox.size = Vector3(_GROUND_HALF_EXTENT_M * 2.0, 2.0, _GROUND_HALF_EXTENT_M * 2.0)
 	fshape.shape = fbox
 	fshape.position = Vector3(0.0, -1.0, 0.0)
 	floor_body.add_child(fshape)
@@ -102,3 +117,19 @@ func normal_force_weight_ratio() -> float:
 		sum_n += w.normal_n
 	var weight: float = (tractor.mass + trailer.mass) * PHYSICS_CONSTANTS.GRAVITY_M_S2
 	return sum_n / weight
+
+
+func out_of_bounds() -> bool:
+	## True when either body's center has left the intended play area (the
+	## ground box). Long probes and at-risk tests call this at the end (or every
+	## sampled tick) so a silent map departure is a visible failure instead of a
+	## bogus number (AS4l2). It is a report, not a containment: the ground box is
+	## simply large enough that no planned run reaches the edge.
+	var tp: Vector3 = tractor.global_position
+	var vp: Vector3 = trailer.global_position
+	return (
+		absf(tp.x) > _GROUND_HALF_EXTENT_M
+		or absf(tp.z) > _GROUND_HALF_EXTENT_M
+		or absf(vp.x) > _GROUND_HALF_EXTENT_M
+		or absf(vp.z) > _GROUND_HALF_EXTENT_M
+	)

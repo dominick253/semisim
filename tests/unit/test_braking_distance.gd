@@ -75,6 +75,14 @@ func test_full_brake_plus_retarder_stops_in_spec_window() -> void:
 		34.0,
 		"80 km/h full brake + full retarder must stop in 24-34 m; got %.2f m" % dist
 	)
+	# AS4l2 (D57): this is the 30 s, 80 km/h run, the longest/highest-speed probe,
+	# so a silent map departure would corrupt the stop distance. The raised ground
+	# (800 m half-extent) keeps it on the ground; assert it so a departure is a
+	# visible failure instead of a bogus number.
+	assert_false(
+		_harness.out_of_bounds(),
+		"rig left the ground during the 30 s stop run (z=%.1f)" % c.tractor.global_position.z
+	)
 
 
 func test_braked_rig_at_rest_stays_at_rest() -> void:

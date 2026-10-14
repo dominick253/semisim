@@ -1,0 +1,178 @@
+CITYHAUL AS4l2: the over-rev gear change at speed is refused and the engine
+stays alive, and the 30 s probe no longer drives off the test ground
+=================================================================================
+
+Repo state: on main. Touched files: scripts/physics/transmission.gd (the
+over-rev guard, `_overrev_reason` + a check in `select_gear`, +14 net lines),
+tests/sim/combination_rest_harness.gd (ground half-extent 150 -> 800 m and a new
+`out_of_bounds()` report), tests/unit/test_gear_change_stability.gd (new, 2
+tests), tests/unit/test_braking_distance.gd (one new `out_of_bounds` assert),
+tests/scratch/downshift_probe.gd (rewritten to route through the real select
+path and to sample `out_of_bounds()`), and one new row (D57) in
+docs/DEVIATIONS.md. No PHYSICS_CONSTANTS value was added or changed. The
+controller (scripts/vehicles/combination_controller.gd) is untouched (997 lines,
+under the 1,000-line cap).
+
+## The two defects (corrected diagnosis)
+
+The brief's earlier "283 km/h energy injector" claim was wrong. The dead child's
+own cumulative-work audit shows what actually happened. At HEAD the probe
+seeds the loaded combination at 22.2222 m/s (80 km/h) in the natural high gear
+and hard-downshifts to gear 1 at t=2. Two independent defects then corrupt the
+run:
+
+Defect 1 -- the test ground has no edge containment. The harness's single
+ground box was 300 m on a side (150 m half-extent). The probe coasts ~22 m/s, so
+it crosses z = -150 (the box edge) at t=12 s, leaves the ground, and free-falls:
+the suspension cumulative work jumps to -31.37 MJ in one second and then goes
+flat, and wheel_omega freezes at 10.97 rad/s with no contact. Every number after
+t=12 (work, wheel rate, speed) is bogus.
+
+Defect 2 -- a gear change at speed over-revs the rigid driveline into a permanent
+engine shutdown. `engine_rpm` (combination_controller.gd, `_step`) is the max of
+the vehicle-speed and wheel-rate rpm, both through the current gear ratio -- the
+driveline is an always-rigid coupling (D51), so the rpm path does not respect the
+clutch pedal. Selecting gear 1 (ratio 4.834) at 22.2222 m/s maps the 39.47 rad/s
+drive-axle rate to ~6,742 rpm, which the driveline clamps to the pinned 1,900 rpm
+shutdown (ENGINE_SHUTDOWN_RPM) on the first tick, and `engine_running` goes
+false. The engine then stays dead for the rest of the run: the rpm remains
+clamped at 1,900 (the wheel is still turning through the too-low ratio), which is
+above the 700 rpm idle floor the D54 restart rule needs, so `engine_running`
+never returns to true. The over-rev and the map-edge free-fall are the two real
+defects; the "energy injector" was a misread of the post-free-fall work audit.
+
+## The fix (no pinned constant changed)
+
+Over-rev guard (scripts/physics/transmission.gd). Option 2 of the brief: refuse
+a ratio change that would exceed redline while engaged. `select_gear` now calls
+`_overrev_reason(speed_m_s, new_gear)` before committing the shift. That helper
+computes the engine rpm the candidate ratio would demand through the same
+`DrivelineModel` conversion as D51 (GEAR_RATIOS[candidate] * FINAL_DRIVE_RATIO
+* RPM_PER_DRIVE_AXLE_RAD_S, using the pinned TIRE_DRIVE for the wheel rate), and
+returns a non-empty reason if it would exceed ENGINE_REDLINE_RPM (1800). If
+refused, the gear does not change and `last_reject_reason` is set to "SHIFT
+WOULD EXCEED REDLINE" (the reason string is a local const, REASON_OVERREV, in
+transmission.gd -- scripts/input/noop_rules.gd is not in the brief's allowed
+files, so it is not touched).
+
+Why not an rpm slew limit or reflected-inertia option: with the D51 coupling
+always rigid, a ratio change is instantaneous and the rpm would still snap past
+redline on the first tick (the slew limit would clamp the rpm but the shift would
+still be committed, and the D54 restart would still be blocked while the rpm sat
+clamped at 1,900). Refusing the over-rev ratio change is the smallest honest rule
+that keeps the engine alive, and it matches what a real transmission/driver does
+for a shift that would instantly past-redline the engine. The guard is
+deliberately not gated on the clutch pedal because the D51 coupling is always
+rigid -- the clutch does not decouple the rpm path. A downshift that stays inside
+the rev range is unaffected (e.g. gear 4 at 19 m/s maps to ~1,538 rpm and is
+accepted).
+
+Test ground (tests/sim/combination_rest_harness.gd). The ground half-extent is
+raised 150 -> 800 m (the box is 1600 m on a side). Sizing: the worst-case probe
+distance is v_max x t = 22.2222 m/s x 30 s = 666.67 m, plus the 6.5 m
+steer-axle overhang ahead of the drive-axle origin = 673.17 m; 800 m keeps every
+planned run at least ~127 m from the edge. (The 120-tick city golden run, 10 s,
+covers only 222.2 m.) A new `out_of_bounds()` reports true when either the
+tractor's or the trailer's center has left the ground box -- a report, not a
+containment, so a silent departure becomes a visible test failure.
+
+## The unit test (tests/unit/test_gear_change_stability.gd, RED first)
+
+Two tests, both harness-based (the same harness, cargo, and 120 Hz step as the
+probe):
+
+  1. test_hard_downshift_at_speed_keeps_engine_alive_and_on_ground: seed at
+     22.2222 m/s (80 km/h) in the natural high gear (gear 5), settle to the idle
+     floor, close throttle, and `select_gear(1, ...)`. Assert the shift is
+     refused (gear stays 5), the engine is alive with rpm < 1,900, then integrate
+     for up to 10 s (120 ticks/s) asserting `out_of_bounds()` is false on every
+     tick and the engine is alive at the end.
+  2. test_legitimate_downshift_inside_rev_range_still_works: seed at 19 m/s in
+     gear 5 and downshift to gear 4. The candidate rpm (~1,538) is inside the
+     rev range, so the shift is accepted (assert the returned bool is true and
+     gear == 4), and `out_of_bounds()` stays false over 3.3 s.
+
+RED first (before the guard): test 1 failed 4 asserts (gear landed on 1, not 5;
+rpm read 1,900, not < 1,900; the engine was dead 10 s after the downshift) and
+test 2 failed (the gear-4 shift was not accepted as the engine had already been
+killed by the over-rev). All 1,200 `out_of_bounds()` checks passed even in the
+RED state, because the ground-extent fix and the over-rev guard are independent.
+GREEN (after the guard): 2/2 passing, 1,208 asserts.
+
+## The measurements (tests/scratch/downshift_probe.gd, 30 s, 120 Hz, loaded)
+
+The probe was rewritten to establish the pre-shift state in gear 5 (manual) at
+80 km/h, so the guarded downshift is the only over-rev event (not the seed), and
+to route the downshift through the real `select_gear` path (it previously
+assigned `transmission.gear = 1` directly). It now prints a `SELECT` line
+(accepted/rejected + reason) and an `oob=` field on every sampled tick.
+
+  PRE    gear=5 range=0 rpm=1390 omega=39.29 speed=22.12   (engine alive)
+  SELECT gear=1 accepted=false reason=SHIFT WOULD EXCEED REDLINE (gear=5)
+
+Sampled every second (gear, run, rpm, speed, oob):
+
+  t=0.0  gear=5 run=1 rpm=1390 speed=22.12 oob=0
+  t=2.0  gear=5 run=1 rpm=1335 speed=21.25 oob=0     <- the refused downshift here
+  t=5.0  gear=5 run=1 rpm= 992 speed=19.88 oob=0
+  t=10.0 gear=5 run=1 rpm= 700 speed=17.41 oob=0
+  t=20.0 gear=5 run=1 rpm= 700 speed=12.21 oob=0
+  t=30.0 gear=5 run=1 rpm= 700 speed= 6.58 oob=0     (coasting to a stop)
+
+  run=1 (engine alive) at every sampled tick over the full 30 s; oob=0 at every
+  sampled tick; the engine_rpm peaks at 1,390 (PRE) and decays to the 700 idle
+  floor as the rig coasts -- it never touches the 1,800 redline or the 1,900
+  shutdown.
+
+The work-audit window (t=10.5-13.5, where the rig crosses the OLD 150 m edge at
+z = -150) is now stable, not a free-fall:
+
+  AUD t=12.0 z=-150.9 run=1 gear=5 dKE= -1526 dGrav=   0 dDriv= -569
+          dDrag= -962 dSosp=    0 dSusp=  0 dSuspW=   0 dBrake=   0 dRetarder=   0 dJoint= -66
+  AUD t=13.0 z=-176.3 run=1 gear=5 dKE= -1888 dGrav=   0 dDriv= -727
+          dDrag= -1155 dSosp=    0 dSusp=  0 dSuspW=   0 dBrake=   0 dRetarder=   0 dJoint=  2
+
+  The rig crosses z = -150 (the old edge) at t=12 and keeps going to z = -176 at
+  t=13 -- but it stays grounded (gnd=1, dSusp/dSuspW ~ 0, no -31 MJ suspension
+  spike) because the ground now extends to 800 m. The residual (dJoint) is small
+  and the work audit is consistent (dKE ~ dDriv + dDrag + dJoint).
+
+## The other gates (unchanged by this slice)
+
+  stop_distance_probe.gd      gear 4 / default cargo stop 23.90 m (the loaded
+                              29,000 kg variant stays in 24-34 m, ~28.6 m, per D56)
+  wheel_spin_probe.gd         dry t=10.0: 6.26 m/s, 11.125 rad/s, 1123 rpm
+                              (within 0.5 percent of the pinned values)
+  wheel_saturation_probe.gd   dry t=0.0: abs=false, demand 21,314 N (unchanged)
+  ice_gear_probe.gd           run=true at every sampled tick
+  engine_restart_probe.gd     still restarts (run false -> true at the first
+                              physics step after the throttle release, t=10.0)
+  smoke_controls.tscn         SMOKE OK
+  probe_kingpin_window.tscn   kp_gap=0.008 (unchanged)
+
+Formatting/lint: `gdformat --check` and `gdlint` are clean on every file this
+slice touches (scripts/physics/transmission.gd, tests/sim/combination_rest_harness.gd,
+tests/unit/test_gear_change_stability.gd, tests/unit/test_braking_distance.gd,
+tests/scratch/downshift_probe.gd). The controller is 997 lines (under 1,000).
+
+## Commands (run from /home/dom/dev/games/semisim)
+
+  export PATH="$HOME/.local/bin:$PATH" LIBGL_ALWAYS_SOFTWARE=1
+  godot-headless --headless --path . -s res://tests/scratch/downshift_probe.gd
+  godot-headless --headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gtest=res://tests/unit/test_gear_change_stability.gd -gexit
+  godot-headless --headless --path . -s res://addons/gut/gut_cmdln.gd \
+    -gdir=res://tests/unit -ginclude_subdirs -gexit
+  gdformat --check scripts tests
+  gdlint scripts tests/unit tests/sim
+
+## Verification: unit suite
+
+Baseline in the tree at start: Scripts 29, Tests 216, Passing 216, Asserts 5,249.
+After this slice: Scripts 30, Tests 218, Passing 218, Asserts 6,458 -- all tests
+passed (GUT_EXIT=0, 303.6 s). Delta = +1 script, +2 tests, +1,209 asserts,
+exactly test_gear_change_stability.gd (2 tests, 1,208 asserts) plus the one new
+out_of_bounds assert in test_braking_distance.gd (+1). No existing test changed
+its result: the 216 baseline tests still pass, which is the confirmation that the
+over-rev guard does not reject any legitimate (inside-rev-range) shift and the
+raised ground extent does not change any at-rest or short-run number.

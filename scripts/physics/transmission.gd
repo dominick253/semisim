@@ -4,6 +4,11 @@ class_name Transmission
 
 enum GearRange { HIGH, LOW }
 
+## HUD reason for the AS4l2 (D57) over-rev shift guard. Local to this class
+## (scripts/input/noop_rules.gd is the shared no-op table but is out of scope
+## for this slice; the string is the one value a new row needs).
+const REASON_OVERREV: String = "SHIFT WOULD EXCEED REDLINE"
+
 var gear: int = 0
 var range: int = GearRange.HIGH
 var automatic: bool = true
@@ -27,6 +32,20 @@ func select_gear(new_gear: int, speed_m_s: float, clutch_depressed: bool) -> boo
 	if reason != "":
 		last_reject_reason = reason
 		return false
+	# AS4l2 (D57): the driveline is an always-rigid coupling (D51: the rpm path
+	# in combination_controller.gd does not respect the clutch pedal), so a gear
+	# change that would map the current wheel rate through the candidate ratio
+	# past the pinned redline over-revs the engine on the first tick, clamps to
+	# the 1900 rpm shutdown, and -- because the rpm then stays above the D54 idle
+	# floor -- never restarts. Refuse the over-rev shift at the shift point, as
+	# a real transmission/driver would for a shift that instantly past-redlines.
+	# A downshift that stays inside the rev range is unaffected. No new constant:
+	# this compares against the pinned ENGINE_REDLINE_RPM using the pinned
+	# GEAR_RATIOS / TIRE_DRIVE and the same DrivelineModel conversion as D51.
+	var over_reject: String = _overrev_reason(speed_m_s, new_gear)
+	if over_reject != "":
+		last_reject_reason = over_reject
+		return false
 	gear = new_gear
 	if new_gear >= 1 and new_gear <= 5:
 		range = GearRange.HIGH
@@ -34,6 +53,21 @@ func select_gear(new_gear: int, speed_m_s: float, clutch_depressed: bool) -> boo
 		range = GearRange.LOW
 	last_reject_reason = ""
 	return true
+
+
+func _overrev_reason(speed_m_s: float, new_gear: int) -> String:
+	## The engine rpm the rigid driveline (D51) would demand if the wheel kept
+	## its current rate through the candidate ratio -- the same conversion the
+	## rpm coupling uses. Past the pinned redline the shift is refused (D57).
+	## Neutral (0) never over-revs forward, and reverse (-1) is speed-gated by
+	## reverse_reason, so both fall through to their own rules.
+	if new_gear <= 0:
+		return ""
+	var wheel_rate: float = absf(speed_m_s) / PHYSICS_CONSTANTS.TIRE_DRIVE["rolling_radius_m"]
+	var rpm: float = DrivelineModel.engine_rpm_from_wheel_rate(wheel_rate, ratio_for(new_gear))
+	if rpm > PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM:
+		return REASON_OVERREV
+	return ""
 
 
 func toggle_range(speed_m_s: float, clutch_depressed: bool) -> bool:
