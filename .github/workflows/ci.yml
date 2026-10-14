@@ -88,3 +88,18 @@ jobs:
           timeout 300 "$GODOT" --headless --path . tests/sim/smoke_controls.tscn \
             | tee smoke.log
           grep -q "SMOKE OK" smoke.log
+
+      # A14: the golden determinism harness. Runs the fixed 600-step scripted
+      # drive twice in one process and gates on the in-process transform
+      # envelope (Jolt is not bit-deterministic, see DEVIATIONS D58). Prints the
+      # two hashes, the envelope, and the final state to the log. Kept under the
+      # same timeout pattern as the sim steps above.
+      - name: Golden determinism (A14)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -euo pipefail
+          timeout 300 "$GODOT" --headless --path . tests/sim/golden_run.tscn \
+            | tee golden.log
+          grep -q "RESULT = PASS" golden.log
+          grep -E "hash|envelope|out_of_bounds|run[0-9] speed|RESULT" golden.log
