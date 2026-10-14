@@ -103,3 +103,18 @@ jobs:
             | tee golden.log
           grep -q "RESULT = PASS" golden.log
           grep -E "hash|envelope|out_of_bounds|run[0-9] speed|RESULT" golden.log
+
+      # A9: the S1 alley-reverse scenario. Reuses the combination harness plus the
+      # pinned alley walls, drives a fixed 900-step reverse script, and gates on
+      # the measured alley fit (clearance positive on both walls, no wall contact,
+      # in bounds) plus the recorded infeasible-backup finding (D59). Same timeout
+      # pattern as the sim steps above.
+      - name: S1 alley-reverse (A9)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -euo pipefail
+          timeout 300 "$GODOT" --headless --path . tests/sim/scenario_s1_alley.tscn \
+            | tee s1_alley.log
+          grep -q "RESULT = PASS" s1_alley.log
+          grep -E "script_checksum|reverse gate|reverse result|peak|swept|clearance|contact|fitted|alley fits|out_of_bounds|RESULT" s1_alley.log

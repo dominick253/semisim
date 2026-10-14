@@ -1,0 +1,156 @@
+CITYHAUL AS4n / A9: the S1 alley-reverse scenario (the minimum street width)
+============================================================================
+
+Repo state: on main. Touched files: tests/sim/scenario_s1_alley.gd (+
+tests/sim/scenario_s1_alley.tscn) (new), tests/unit/test_scenario_s1_alley.gd
+(new), .github/workflows/ci.yml (one new "S1 alley-reverse (A9)" step), one new
+row (D59) in docs/DEVIATIONS.md, and this evidence file. tests/scratch/
+s1_probe.gd (+ .tscn) is a gitignored scratch probe used only to establish the
+reverse-direction and reverse-steer-sign measurements before the scenario was
+pinned. No production code changed: scripts/vehicles/combination_controller.gd
+is untouched (the scenario drives it through the controller's existing
+`scripted_input` Callable and `request_gear(-1)`, so no scripted-input hook was
+needed). No PHYSICS_CONSTANTS value was added or changed, and the alley geometry
+and the world-spec street classes are left exactly as pinned.
+
+## The target (phase2-plan line 41 / world-spec minimum street width)
+
+"S1, S2, S3 scenario scripts (A9, A11, A12) ... The alley reverse S1 is the only
+measured evidence that the combination fits a tight street. City street widths
+should be set from that number, not guessed." world-spec.md line 117 makes the
+same demand (minimum street width set from the S1 alley result), and its
+section 4 `alley` class keeps the Phase 1 alley numbers exactly (8.00 m wide,
+60.0 m long) and is defined as "straight running only / not turnable". Before
+this slice no scenario script existed anywhere (`ls tests/sim/` held only
+harnesses, probes and shots).
+
+## What the scenario does (tests/sim/scenario_s1_alley.gd)
+
+Builds the same combination through the shared tests/sim/combination_rest_
+harness (not a forked rig builder) and the two alley walls at their pinned
+geometry (PHYSICS_CONSTANTS ALLEY_INNER_X_WEST=-40.0 / ALLEY_INNER_X_EAST=-32.0
+inner faces, ALLEY_MIN_Z=-15.0 to ALLEY_MAX_Z=+45.0, WALL_THICKNESS_M, WALL_
+HEIGHT_M, LAYER_STRUCTURES, the "wall" group) -- the exact boxes
+test_yard._build_alley() places, so the clearance is measured against the real
+alley. It places the rig at the alley mouth (drive axle x=-36.0, z=+44.0,
+heading 180 deg so the trailer leads into the alley), engages reverse from rest,
+then drives a fixed MANEUVER_TICKS=900 per-step input script (deterministic
+records, no RNG, an FNV-1a script checksum, through the controller's existing
+`scripted_input` Callable): throttle 0.3, steer 0.0 (a straight alley pass --
+the alley class is straight-running-only), no brake, no retarder.
+
+It reports, from every sampled tick:
+  1. minimum clearance per wall from the OUTERMOST body-box points (the 8 world
+     corners of the tractor box TRACTOR_BOX/TRACTOR_BOX_CENTER and the trailer
+     box TRAILER_BOX/TRAILER_BOX_CENTER -- the swept width, not the origin);
+  2. whether any wall contact happened (collision-notify: body_entered on the
+     "wall" group; the brief allows collision-notify or raycast, this is notify);
+  3. peak articulation and peak reverse speed;
+  4. the fitted alley width the measured sweep clears, and whether the pinned
+     8.0 m alley fits;
+  5. out_of_bounds() (the AS4l2 helper) at the end.
+
+## The key finding: the drivetrain reverse drives forward (docs/DEVIATIONS.md D59)
+
+The transmission's reverse ratio is POSITIVE and applied with the SAME sign as
+forward. `Transmission.ratio_for(-1)` returns `PHYSICS_CONSTANTS.REVERSE_RATIO`
+= 8.315 (positive), and `_drive_wheel_torque()` -> `DrivelineModel.
+wheel_torque_nm(...)` multiplies it in with no sign flip (scripts/physics/
+transmission.gd, driveline_model.gd, combination_controller.gd). So gear R with
+throttle drives the combination FORWARD along its heading instead of backing it
+up. A literal alley backup (rear leading, the only physically meaningful "alley
+reverse") therefore CANNOT complete in the current model.
+
+Measured, in gear R with throttle (tests/scratch/s1_probe.gd, heading 180 deg,
+so "forward" is +Z and a true backup would be -Z):
+
+    pre-shift speed=0.0054 m/s, after request_gear(-1): gear=-1 reason=''
+    t=  0 z=39.999 vdot_fwd=-0.0042 gear=-1
+    t=120 z=40.305 vdot_fwd=+0.5924 gear=-1
+    t=299 z=41.784 vdot_fwd=+1.3674 gear=-1
+
+vdot_fwd is the velocity dotted with the forward heading; it is positive, i.e.
+the rig moves along its heading (forward) in gear R, never against it. There is
+no input path in the controller to make gear R drive backward, and the fix
+(negating the reverse ratio, or sign-flipping the reverse wheel torque) belongs
+in scripts/vehicles/combination_controller.gd / a PHYSICS_CONSTANTS value, which
+this slice must not touch. Per the brief, the scenario encodes the failure
+honestly rather than fabricating a reverse the drivetrain cannot produce.
+
+The reverse speed gate itself works as pinned: `NoopRules.reverse_reason` gates
+R on speed <= REVERSE_MAX_SPEED_M_S (0.5 m/s), and from rest (speed 0.0046 m/s)
+`request_gear(-1)` engages cleanly on the first attempt (gear=-1, reject '').
+
+## The reverse steer sign (the "trailer steers the other way" trap)
+
+With the rig in gear R, a positive steer input articulates the trailer to the
+OPPOSITE sign of forward driving. Measured in the scenario: a steer +0.5 hold in
+gear R reaches a peak |articulation| of +11.334 deg (the scratch probe's short
+steer +0.5 run shows articulation -0.847 deg at +0.5 steer vs +1.726 deg at
+-0.5 steer over the same 120 ticks). The scenario's main pass uses steer 0.0
+(straight), so its peak articulation is +0.015 deg -- straight, as an 8.0 m
+straight-only alley requires.
+
+## Measurement (tests/sim/scenario_s1_alley.tscn, godot 4.7.2-stable, headless,
+LIBGL_ALWAYS_SOFTWARE=1)
+
+    S1 ALLEY-REVERSE  steps=900  hz=120
+    script_checksum = -6757803941589268071 (900 records)
+    reverse gate: pre-shift speed=0.0046 m/s (<=0.50), engaged=true, reject=''
+    reverse result: completed=false (delta_z=+11.820 m over 900 ticks, target back-down <= -1.0 m)
+    peak reverse (backward) speed = 0.0016 m/s   peak forward speed = 3.3890 m/s
+    peak articulation = +0.0003 rad (+0.015 deg) at step 50
+    reverse steer sign: steer +0.5 in gear R -> peak |artic| = +11.334 deg (sign flips vs forward)
+    z trace (step:z) = ["0:44.000", ..., "270:45.069", ..., "899:55.820"]
+    x extent trace (step:[min,max]) = ["0:[-37.297,-34.703]", ..., "899:[-37.299,-34.706]"]
+    swept width = 2.5969 m   (min x -37.2992, max x -34.7023)
+    min clearance: west wall = 2.7008 m, east wall = 2.7023 m (strictly positive=true)
+    wall contact (body_entered on "wall"): 0
+    fitted width: zero-margin = 2.5969 m, +2x0.50 m margin = 3.5969 m
+    pinned 8.0 m alley fits: true (with 0.50 m margin: true)
+    out_of_bounds = false
+    RESULT = PASS
+
+Reading the numbers:
+- The rig is placed to back down the alley (trailer leading, toward -15) but,
+  because the drivetrain drives it forward in gear R, it moves +11.820 m the
+  wrong way (z 44.0 -> 55.82, out through the +45 gate) and the peak BACKWARD
+  speed is 0.0016 m/s. The back-down "stalls"; `reverse_completed` is false.
+- The swept lateral extent is constant at 2.5969 m (min x -37.2992, max x
+  -34.7023), centred on the -36.0 alley centreline: the combination's own
+  width, unchanged by the (infeasible) reverse.
+- Minimum clearance to the west wall (inner face x=-40.0) is 2.7008 m and to the
+  east wall (inner face x=-32.0) is 2.7023 m -- both strictly positive, no wall
+  contact. The measured sweep (min x -37.2992, max x -34.7023) fits the pinned
+  8.0 m alley with 2.70 m to spare on each side; even with the stated 0.50 m
+  handling margin per side it fits (fitted zero-margin width 2.5969 m,
+  3.5969 m with margin).
+- out_of_bounds() is false; the run stayed inside the 800 m harness ground.
+
+## What S1 gates, stated plainly
+
+- The alley straight-passage FITS: no wall contact, clearance strictly positive
+  on both walls, the measured sweep inside the pinned 8.0 m, and the run in
+  bounds. This is the measured evidence world-spec section 4 needs for the
+  `alley` (8.0 m, straight-running-only) class: a combination's swept width is
+  ~2.60 m, so an 8.0 m straight alley clears it with ~2.70 m per side.
+- The literal alley BACKUP is recorded as infeasible (D59): the drivetrain
+  reverse ratio drives the combination forward, so the "reverse" the A9 target
+  asks for cannot be produced without a production-code fix this slice is not
+  allowed to make. The scenario asserts the infeasibility (reverse engaged,
+  back-down not completed, no backward speed) rather than asserting a reverse
+  that the model cannot deliver.
+
+The CI "S1 alley-reverse (A9)" step re-runs the scenario headless and greps
+`RESULT = PASS`.
+
+## Follow-ups recorded, not fixed (per brief)
+
+- The drivetrain reverse-sign defect (D59) needs a production-code fix
+  (negate REVERSE_RATIO or sign-flip the reverse wheel torque in
+  combination_controller.gd) before a true alley backup is measurable; that is
+  out of scope here.
+- Challenges and scoring (scripts/challenges/) are still empty; A10 and A13
+  remain open.
+- AirSystem.consume_psi() still has no production caller.
+- jackknifed latches with no release path; the coupler has no release input.
