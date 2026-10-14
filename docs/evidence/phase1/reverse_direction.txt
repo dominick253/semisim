@@ -1,0 +1,203 @@
+CITYHAUL AS4o: drivetrain reverse direction (closes docs/DEVIATIONS.md D59)
+============================================================================
+
+Repo state: main at b95f299. Touched files: scripts/vehicles/combination_\
+controller.gd (the 3-line fix in _drive_wheel_torque, 997 -> 1000 lines),
+tests/unit/test_reverse_direction.gd (new), tests/sim/scenario_s1_alley.gd
+(re-pointed to the real backup), tests/unit/test_scenario_s1_alley.gd
+(re-pointed), one updated row (D59) in docs/DEVIATIONS.md, and this evidence
+file. tests/scratch/reverse_probe.gd is a gitignored scratch probe. No
+PHYSICS_CONSTANTS value was added or changed: REVERSE_RATIO stays 8.315
+positive (spec 5.3), and the sign now lives in the torque, not the constant.
+
+## The defect (measured at b95f299, pre-fix)
+
+`Transmission.ratio_for(-1)` returns the pinned `PHYSICS_CONSTANTS.
+REVERSE_RATIO` = 8.315 positive, and `DrivelineModel.wheel_torque_nm`
+multiplies it into the drive-axle torque with no sign flip. Gear R with
+throttle therefore drove the combination FORWARD along its heading.
+
+tests/scratch/reverse_probe.gd (heading 180 deg: forward = +Z, backup = -Z),
+from rest, 900 ticks at throttle 0.3:
+
+  PRE  delta_z = +7.7451 m (start -0.0011 -> end 7.7435)
+       peak forward vdot = +2.7700 m/s, peak backward vdot = -0.0014 m/s
+       wheel_omega end = +4.9221 rad/s (spinning forward), rpm 700..1445, alive
+
+tests/sim/scenario_s1_alley.tscn standalone (the S1 alley, 900 ticks at
+throttle 0.3, script_checksum -6757803941589268071):
+
+  PRE  delta_z = +11.820 m (z 44.0 -> 55.82, out through the +45 gate)
+       peak reverse 0.0016 m/s, peak forward 3.3890 m/s
+       swept width 2.5969 m, clearance west 2.7008 / east 2.7023 m,
+       0 wall contacts, out_of_bounds false (the straight-passage fit was the
+       only thing true; the backup itself never happened)
+
+## Sign-consumer audit (every reader of Transmission.ratio / ratio_for)
+
+- scripts/vehicles/combination_controller.gd:744 `_drive_wheel_torque` ->
+  `DrivelineModel.wheel_torque_nm`: applied the positive reverse ratio with
+  the forward sign. THE BUG. Fixed here (shape 1 below).
+- scripts/vehicles/combination_controller.gd:367 `drive_ratio = transmission.
+  ratio()`: feeds _drive_wheel_torque (above) and
+  `DrivelineModel.effective_inertia_kg_m2`, which squares the ratio ->
+  sign-free.
+- scripts/vehicles/combination_controller.gd:719 `_engine_rpm_from_wheel_rate`
+  -> `DrivelineModel.engine_rpm_from_wheel_rate`: `absf()` on the wheel rate,
+  ratio used as a magnitude -> sign-free (a negative reverse ratio would have
+  hit its `ratio <= 0.0 -> idle` branch and read a moving combination as idle).
+- scripts/physics/transmission.gd:67 `_overrev_reason`: returns "" for
+  `new_gear <= 0` -> reverse is skipped (D57 guard is forward-only).
+- scripts/physics/transmission.gd:114 `auto_shift`: returns for `gear <= 0` ->
+  automatic mode can never shift into or out of reverse (verified; the S1 run
+  stays in R for all 900 ticks, reject '').
+- scripts/physics/transmission.gd:99 `speed_at_idle(-1)`: returns the
+  magnitude (r > 0); only caller is auto_shift line 125 with `gear - 1 >= 1`,
+  so `speed_at_idle(-1)` is unreachable.
+- scripts/input/noop_rules.gd: the reverse gate compares `speed()`, which is
+  `tractor.linear_velocity.length()` (combination_controller.gd:845) -- a
+  magnitude -> sign-free, untouched.
+- tests/unit/*: every `transmission.ratio()` read in tests runs in forward
+  gears 1..5 (test_driveline_inertia, test_engine_follows_wheel,
+  test_tire_slip_curve); no test reads the ratio in gear R.
+
+Drag/brake path (the brief asks what they do today):
+- Coast drag/rolling resistance (`_apply_coast_forces`,
+  combination_controller.gd:778) applies `-v.normalized() * resist` to each
+  body -> opposes velocity regardless of direction -> already correct in
+  reverse, untouched.
+- Service brakes use `motion = signf(v_forward_wheel)` (combination_controller.
+  gd:538, D37) -> brake force opposes the actual travel direction -> already
+  correct in reverse, untouched.
+- Engine braking (`engine_nm = -TireModel.engine_brake_torque_nm(engine_rpm)`,
+  throttle 0) PRE-fix in gear R produced a NEGATIVE wheel torque, i.e. a
+  contact force in the -heading direction -- the same direction as the backward
+  travel: the "brake" was accelerating the backup. Post-fix the sign flip makes
+  it +heading, opposing the travel (measured +3470.3 Nm at 1 m/s backward,
+  pre-fix -3470.3 Nm).
+
+## The fix (shape 1 of the brief's two options)
+
+`_drive_wheel_torque` sign-flips the finished drive-wheel torque when the
+selected gear is reverse; `ratio()` stays a magnitude:
+
+    var torque: float = DrivelineModel.wheel_torque_nm(
+        engine_nm, throttle, ratio, 1.0 - _clutch_engagement(),
+        _drive_forward_speed()
+    )
+    if transmission.gear == -1:
+        torque = -torque  # AS4o (D59): gear R drives against the heading
+    return torque
+
+Why shape 1 over shape 2 (negative `ratio_for(-1)`): the consumers above show
+the negative-ratio route would have changed the rpm path's `ratio <= 0.0 ->
+idle` branch (a combination moving in reverse would read idle rpm) and
+`speed_at_idle(-1)` (0.0), i.e. two silent behaviour changes beyond the
+direction itself, versus a 3-line, one-call-site change here. The saturated-
+branch wheel integrator and the mu-slip `braking` predicate
+(`demand_n * v_forward_wheel < 0`) both key off the torque/demand sign, so they
+are correct in reverse with the flipped torque (the reverse run never
+saturates; grip-branch omega = v/r is negative as expected).
+
+## RED -> GREEN (tests/unit/test_reverse_direction.gd, new)
+
+RED (pre-fix, full suite): 33 scripts / 226 tests / 223 passing / 3 failing.
+The 3 failures are the reverse tests; the 2 pin tests (pinned 8.315 magnitude,
+speed gate) pass pre-fix as intended:
+  - test_gear_r_drive_torque_opposes_heading: torque = +10411.0 Nm (want < 0)
+  - test_gear_r_engine_braking_opposes_backward_travel: torque = -3470.3 Nm
+    (want > 0)
+  - test_gear_r_from_rest_backs_up: delta_z = +1.687 m (want < -0.5 m), end
+    vdot = +1.114 m/s (want < 0)
+
+GREEN (post-fix, full suite): 33 scripts / 226 tests / 226 passing / 0
+failing, 6504/6504 asserts. The tests print:
+  - gear R throttle 0.3: _drive_wheel_torque = -10411.0 Nm
+  - gear R, 1 m/s backward, rpm 700: torque = +3470.3 Nm (magnitude 3470.3)
+  - 360-tick run from rest at heading 180: delta_z = -2.0037 m, end vdot
+    = -1.2041 m/s, max forward vdot +0.0000, omega = -2.1517 rad/s,
+    rpm 700..700 (idle floor), engine never dead
+  - gate: R refused at 1.0 m/s with REASON_REVERSE_SPEED, accepted at 0.4 m/s
+
+## The re-pointed S1 alley backup (tests/sim/scenario_s1_alley.gd)
+
+Same input script (900 ticks, throttle 0.3, steer 0.0 -- script_checksum
+-6757803941589268071 unchanged), same walls, same measurements; the assertions
+now require a real completed backup (delta_z <= -1.0 m, trailer ends inside
+the alley) instead of the honest infeasibility. Standalone post-fix:
+
+  completed = true:  delta_z = -11.818 m over 900 ticks (z 44.0 -> 32.18)
+  peak reverse (backward) speed = 3.3886 m/s, peak forward = 0.0000 m/s
+  trailer end-of-pass z extent = 19.432 .. 35.587 m (alley -15 .. +45):
+      inside the alley
+  swept width = 2.5930 m  (min x -37.2962, max x -34.7032)
+  min clearance: west 2.7038 m, east 2.7032 m (strictly positive)
+  wall contacts (backup pass) = 0, out_of_bounds = false, RESULT = PASS
+  reverse steer sign (post-pass diagnostic): steer +0.5 in R -> peak |artic|
+      = +14.733 deg
+
+The pre-fix mirror run (same script, forward instead of backward) covered
++11.820 m and peaked at 3.3890 m/s forward: the fix is a pure sign mirror, no
+magnitude change.
+
+THE NUMBER FOR world-spec SECTION 4: the swept width of a real alley backup
+is 2.5930 m (standalone; 2.5935 m in the other standalone post-fix run;
+2.5969 m was the pre-fix forward-pass reading). Body-width dominated (trailer
+box 2.59 m wide), straight pass, zero steer. The minimum street width for the
+`alley` class is set from this: ~2.59 m of sweep, 3.59 m with the 2 x 0.50 m
+handling margin -- the pinned 8.0 m alley clears it with 2.70 m per side.
+
+Maneuver budget: 900 ticks (7.5 s) at throttle 0.3 covers 11.8 m backward at a
+peak of 3.3886 m/s; the 1.0 m completion target is met around step 270 (z trace
+step 270: 42.930, i.e. -1.07 m from the start). A full 60 m alley back-in would
+need ~4,200 ticks at the steady 3.39 m/s; not required by A9.
+
+## Forward path did not move (before / after, same commands)
+
+  probe                      pre-fix (b95f299)           post-fix
+  wheel_spin t=10.0          6.26 m/s, 11.120 rad/s,     6.26 m/s, 11.125 rad/s,
+                             1122 rpm                    1123 rpm
+  saturation dry t=0.0       2.65 m/s, 4.707 rad/s,      2.64 m/s, 4.698 rad/s,
+                             adhesion 65917 N, demand    adhesion 65657 N, demand
+                             21314 N                      21314 N
+  ice launch t=8.0           2.86 m/s, gear 2,           2.86 m/s, gear 2,
+                             slip -0.0007                 slip -0.0007
+  stop 80 km/h PIN r0..r3    28.66 / 28.62 / 28.69 /     28.57 / 28.62 / 28.62 /
+                             28.62 m                      28.62 m
+  stop X1 auto default       40.50 m                     40.50 m
+  stop X2 brake only         43.50 m                     43.50 m
+  stop X3 gear4 default      23.90 m                     23.90 m
+  engine restart             RESTART frame 240, t=5      RESTART frame 240, t=5
+                             3.60 m/s, t=10 5.92 m/s,    3.61 m/s, t=10 5.93 m/s,
+                             t=30 0.09 m/s run=true      t=30 0.09 m/s run=true
+  downshift 80 km/h          PRE 1390 rpm; END 0.35 m/s  PRE 1390 rpm; END 0.35 m/s
+                             run=1 oob=0                  run=1 oob=0
+  golden_run.tscn            hash -3212756618377091765 / hash -3212756618377091765 /
+                             373496036312695534, env      373496036312695534, env
+                             61.430 mm, 0.0681/0.0668     61.430 mm, 0.0681/0.0668
+                             m/s (byte-identical run)     m/s (byte-identical run)
+  S1 standalone              delta_z +11.820 m (wrong    delta_z -11.818 m (the
+                             direction), swept 2.5969 m   fix), swept 2.5930 m
+  smoke_controls.tscn        SMOKE OK (actions=135       SMOKE OK (actions=135
+                             speed=0.052 gear=1)          speed=0.052 gear=1) --
+                                                          identical line
+  probe_kingpin_window.tscn  kp_gap=0.008                kp_gap=0.008
+
+Differences are at or below the third significant digit (the Jolt discrete-
+state noise floor recorded in D58/D56; e.g. the stop distance lands on one of
+the documented 28.53..28.69 m states, the wheel-spin t=10.0 line matches the
+D51 recorded numbers 6.26 / 11.120 / 1122). The golden run is byte-identical
+across the two processes. No forward-path number moved.
+
+## GUT
+
+  pre-fix:  33 scripts / 226 tests / 223 passing / 3 failing (the 3 new
+           reverse tests; baseline without the new file: 32 / 221 / 221 / 6480
+           asserts, per the parent's b95f299 run)
+  post-fix: 33 scripts / 226 tests / 226 passing / 0 failing, 6504/6504 asserts
+
+## Format / lint
+
+`gdformat --check scripts tests` and `gdlint scripts tests/unit tests/sim`
+clean on finish. combination_controller.gd is exactly 1000 lines (gdlint's
+fail threshold is OVER 1000).

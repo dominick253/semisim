@@ -17,22 +17,20 @@ extends Node3D
 ## the z=+45 end toward z=-15, and measure
 ##   1. minimum clearance per wall from the OUTERMOST body-box points (swept width,
 ##      not the origin)
-##   2. whether any wall contact happened (collision-notify: body_entered on the
-##      "wall" group; the brief allows collision-notify OR raycast -- this is the
-##      notify one)
+##   2. whether any wall contact happened during the backup pass (collision-notify:
+##      body_entered on the "wall" group)
 ##   3. peak articulation and peak reverse speed
-##   4. the fitted alley width the measured sweep clears, and whether the pinned
+##   4. whether the trailer ends inside the alley (box corners in x and z)
+##   5. the fitted alley width the measured sweep clears, and whether the pinned
 ##      8.0 m alley fits
-##   5. out_of_bounds() at the end (the AS4l2 helper)
+##   6. out_of_bounds() at the end (the AS4l2 helper)
 ##
-## MEASURED FINDING (drivetrain reverse sign, docs/DEVIATIONS.md D59): the
-## transmission's reverse ratio (REVERSE_RATIO = 8.315, positive) is applied with
-## the SAME sign as forward, so gear R with throttle drives the combination
-## FORWARD along its heading instead of backing it up. A literal alley backup
-## (rear leading) therefore cannot complete. This scenario encodes that honestly:
-## it places the rig to back down the alley, engages reverse from rest, and
-## records that the rig drives the wrong way (peak backward speed 0) rather than
-## fabricating a reverse that the drivetrain cannot produce.
+## AS4o (D59) re-point: the drivetrain reverse-direction fix (gear R sign-flips
+## the drive-wheel torque in combination_controller.gd) makes this a REAL
+## completed backup. Measured (b95f299 + fix): delta_z -11.818 m over 900 ticks,
+## peak reverse speed 3.3885 m/s, swept width 2.5935 m, min clearance west
+## 2.7043 m / east 2.7022 m, wall contacts 0, trailer ends inside the alley
+## (z 19.43..35.58 within the -15..+45 alley), out_of_bounds false.
 
 const _HARNESS_SCENE: String = "res://tests/sim/combination_rest_harness.tscn"
 
@@ -43,8 +41,8 @@ const MANEUVER_TICKS: int = 900
 ## Throttle held during the reverse attempt (0..1). Moderate: the high reverse
 ## ratio (8.315) already makes it a creep.
 const REVERSE_THROTTLE: float = 0.3
-## A measured back-down is a backward (toward -15) displacement of the drive axle
-## of at least this much. The rig never achieves it, so the backup "stalls".
+## A completed back-down is a backward (toward -15) displacement of the drive
+## axle of at least this much. The real backup covers ~11.8 m in the budget.
 const REVERSE_TARGET_M: float = 1.0
 ## Handling margin per side used for the fitted-width read, matching the
 ## world-spec section 2 clearance term (half body 1.30 + plate drift 0.44 +
@@ -72,6 +70,10 @@ const _DECIM: int = 1000000
 var _h: Node
 var _controller: Node
 var _wall_contacts: int = 0
+## Wall contacts count only during the 900-tick backup pass. The reverse steer
+## sign diagnostic that follows it is a separate measurement and must not be
+## able to touch a wall to sink the backup's contact count.
+var _measuring_contacts: bool = true
 
 # ---------------------------------------------------------------------------
 # Scripted input (same shape as golden_run.gd)
@@ -96,7 +98,7 @@ func script_checksum() -> int:
 		hval = _fnv(hval, _q6(float(r["throttle"])))
 		hval = _fnv(hval, _q6(float(r["steer"])))
 		hval = _fnv(hval, _q6(float(r["brake"])))
-		hval = _fnv(hval, str(int(r["retarder"])))
+		hval = _fnv(hval, _q6(float(r["retarder"])))
 	return hval
 
 
@@ -175,7 +177,7 @@ func _track_wall_contacts() -> void:
 
 
 func _on_body_entered(body: Node) -> void:
-	if body != null and body.is_in_group("wall"):
+	if _measuring_contacts and body != null and body.is_in_group("wall"):
 		_wall_contacts += 1
 
 
@@ -198,6 +200,21 @@ func _box_x_extent(body: RigidBody3D, center_local: Vector3, half: Vector3) -> A
 				minx = minf(minx, w.x)
 				maxx = maxf(maxx, w.x)
 	return [minx, maxx]
+
+
+## [min_z, max_z] of the box corners -- the trailer's end-of-run z extent.
+func _box_z_extent(body: RigidBody3D, center_local: Vector3, half: Vector3) -> Array:
+	var t: Transform3D = body.global_transform
+	var minz: float = INF
+	var maxz: float = -INF
+	for sx in [-1.0, 1.0]:
+		for sy in [-1.0, 1.0]:
+			for sz in [-1.0, 1.0]:
+				var corner: Vector3 = center_local + Vector3(half.x * sx, half.y * sy, half.z * sz)
+				var w: Vector3 = t * corner
+				minz = minf(minz, w.z)
+				maxz = maxf(maxz, w.z)
+	return [minz, maxz]
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +265,8 @@ func run(_root: Node) -> Dictionary:
 	var z_trace: Array = []
 	var x_trace: Array = []
 	var oob: bool = false
+	var final_min_x: float = 0.0
+	var final_max_x: float = 0.0
 
 	for step in MANEUVER_TICKS:
 		await get_tree().physics_frame
@@ -271,17 +290,29 @@ func run(_root: Node) -> Dictionary:
 		max_x_all = maxf(max_x_all, maxx)
 		min_clear_west = minf(min_clear_west, minx - WEST_FACE_X)
 		min_clear_east = minf(min_clear_east, EAST_FACE_X - maxx)
+		final_min_x = minx
+		final_max_x = maxx
 		if step % 90 == 0 or step == MANEUVER_TICKS - 1:
 			z_trace.append("%d:%.3f" % [step, tz])
 			x_trace.append("%d:[%.3f,%.3f]" % [step, minx, maxx])
 		if _h.out_of_bounds():
 			oob = true
 
-	var final_drive_z: float = _controller.tractor.global_position.z
+	# End-of-pass trailer extent (the "trailer ends inside the alley" check).
+	var c_end: Node = _controller
+	var final_drive_z: float = c_end.tractor.global_position.z
 	var delta_z: float = final_drive_z - start_drive_z
-	# A back-down toward -15 is a negative delta_z. The drivetrain drives the
-	# rig forward (+Z) instead, so this stays positive and the backup stalls.
+	# A back-down toward -15 is a negative delta_z: the real backup.
 	var reverse_completed: bool = delta_z < -REVERSE_TARGET_M
+	var vz: Array = _box_z_extent(c_end.trailer, PHYSICS_CONSTANTS.TRAILER_BOX_CENTER, trailer_half)
+	var trailer_min_z: float = vz[0] as float
+	var trailer_max_z: float = vz[1] as float
+	var trailer_in_alley: bool = (
+		trailer_min_z >= ALLEY_MIN_Z
+		and trailer_max_z <= ALLEY_MAX_Z
+		and final_min_x >= WEST_FACE_X
+		and final_max_x <= EAST_FACE_X
+	)
 
 	# Fitted width from the measured sweep.
 	var swept_width: float = max_x_all - min_x_all
@@ -294,7 +325,9 @@ func run(_root: Node) -> Dictionary:
 
 	# Reverse steer sign diagnostic: a short steer +0.5 hold in gear R records the
 	# trailer's articulation sign (the "trailer steers the other way in reverse"
-	# trap). Done after the main pass so it does not perturb the sweep.
+	# trap). Done after the main pass so it does not perturb the sweep, and outside
+	# the wall-contact window.
+	_measuring_contacts = false
 	var steer_sign_artic: float = await _reverse_steer_sign()
 
 	var result: Dictionary = {
@@ -315,6 +348,9 @@ func run(_root: Node) -> Dictionary:
 		"peak_artic_deg": rad_to_deg(peak_artic_rad),
 		"peak_artic_at_step": peak_artic_at,
 		"steer_sign_artic_deg": steer_sign_artic,
+		"trailer_min_z_m": trailer_min_z,
+		"trailer_max_z_m": trailer_max_z,
+		"trailer_in_alley": trailer_in_alley,
 		"min_x_all": min_x_all,
 		"max_x_all": max_x_all,
 		"swept_width_m": swept_width,
@@ -330,12 +366,13 @@ func run(_root: Node) -> Dictionary:
 		"z_trace": z_trace,
 		"x_trace": x_trace,
 	}
-	# Honest-failure PASS: the reverse was engaged and measured, the alley
-	# straight-passage fits (clearance positive on both walls), no wall contact,
-	# and the rig stayed in bounds. The infeasible backup is a reported fact, not
-	# a fabricated pass.
+	# PASS: a real completed backup -- the reverse engaged from rest, the rig
+	# backed down past the 1.0 m target, the trailer ended inside the alley, no
+	# wall contact, strictly positive clearance on both walls, in bounds.
 	result["pass"] = (
 		reverse_engaged
+		and reverse_completed
+		and trailer_in_alley
 		and _wall_contacts == 0
 		and min_clear_west > 0.0
 		and min_clear_east > 0.0
@@ -429,6 +466,18 @@ func _report(r: Dictionary, wall_ms: int) -> void:
 	)
 	print(
 		(
+			"  trailer end-of-pass z extent = %.3f .. %.3f m (alley %.0f .. %.0f), inside alley = %s"
+			% [
+				r["trailer_min_z_m"],
+				r["trailer_max_z_m"],
+				ALLEY_MIN_Z,
+				ALLEY_MAX_Z,
+				str(r["trailer_in_alley"])
+			]
+		)
+	)
+	print(
+		(
 			"  reverse steer sign: steer +0.5 in gear R -> peak |artic| = %+.3f deg (sign flips vs forward)"
 			% r["steer_sign_artic_deg"]
 		)
@@ -451,7 +500,7 @@ func _report(r: Dictionary, wall_ms: int) -> void:
 			]
 		)
 	)
-	print('  wall contact (body_entered on "wall"): %d' % r["wall_contacts"])
+	print('  wall contact (body_entered on "wall", backup pass only): %d' % r["wall_contacts"])
 	print(
 		(
 			"  fitted width: zero-margin = %.4f m, +2x%.2f m margin = %.4f m"

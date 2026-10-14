@@ -1,19 +1,20 @@
 extends GutTest
-## S1 alley-reverse scenario pin (A9). Runs the scripted alley-reverse maneuver
-## and asserts the measured result honestly.
+## S1 alley-reverse scenario pin (A9). AS4o re-point: with the drivetrain
+## reverse-direction fix (D59, gear R sign-flips the drive-wheel torque in
+## combination_controller.gd) this test asserts the REAL maneuver instead of the
+## old honest infeasibility: a completed backup down the 8.0 m alley.
 ##
-## MEASURED FINDING (docs/DEVIATIONS.md D59): the drivetrain's reverse ratio is
-## positive, so gear R with throttle drives the combination FORWARD, not
-## backward. A literal alley backup cannot complete. This test encodes that
-## honestly: it asserts the reverse was engaged from rest (the speed gate passed),
-## that the back-down did NOT complete (the rig drives the wrong way instead),
-## that no wall was contacted, that the alley straight-passage clears both walls,
-## and that the run stayed in bounds.
+## Measured (b95f299 + fix, standalone): delta_z -11.818 m over 900 ticks, peak
+## reverse speed 3.3885 m/s, swept width 2.5935 m, min clearance west 2.7043 m /
+## east 2.7022 m, wall contacts 0, trailer end-of-pass z 19.43..35.58 (inside the
+## -15..+45 alley), out_of_bounds false, RESULT = PASS. The swept width from this
+## real backup is the number docs/world-spec.md section 4 needs for the minimum
+## street width: ~2.59 m (body-width dominated, straight pass, zero steer).
 
 const _SCENARIO: String = "res://tests/sim/scenario_s1_alley.gd"
 
 
-func test_s1_alley_reverse_cannot_back_down_drivetrain_reverse_drives_forward() -> void:
+func test_s1_alley_reverse_completes_the_backup() -> void:
 	var sc: Node = load(_SCENARIO).new()
 	add_child(sc)
 	await get_tree().process_frame
@@ -21,6 +22,24 @@ func test_s1_alley_reverse_cannot_back_down_drivetrain_reverse_drives_forward() 
 	sc.queue_free()
 	await get_tree().process_frame
 	await get_tree().process_frame
+	print(
+		(
+			(
+				"S1 ALLEY (AS4o re-point): delta_z=%+.3f m peak_reverse=%.4f m/s swept_width=%.4f m "
+				+ "clear_w=%.4f clear_e=%.4f contacts=%d trailer_in_alley=%s oob=%s"
+			)
+			% [
+				r["delta_z_m"],
+				r["peak_reverse_speed_m_s"],
+				r["swept_width_m"],
+				r["min_clear_west_m"],
+				r["min_clear_east_m"],
+				r["wall_contacts"],
+				str(r["trailer_in_alley"]),
+				str(r["out_of_bounds"]),
+			]
+		)
+	)
 
 	# The reverse speed gate engaged from rest (speed <= 0.5 m/s), first attempt.
 	assert_true(r["reverse_engaged"], "reverse must engage from rest (speed gate)")
@@ -31,31 +50,29 @@ func test_s1_alley_reverse_cannot_back_down_drivetrain_reverse_drives_forward() 
 		"pre-shift speed below the reverse gate"
 	)
 
-	# Honest failure: the back-down did NOT complete; the drivetrain drives the
-	# rig forward (positive delta_z) instead of backing it toward -15.
-	assert_false(
-		r["reverse_completed"],
-		"the alley backup does not complete (drivetrain reverse drives forward, D59)"
-	)
-	assert_gt(
-		r["delta_z_m"],
-		0.0,
-		"the rig moved forward (+Z) instead of backing toward -15 (drivetrain reverse sign)"
-	)
-	assert_almost_eq(
-		r["peak_reverse_speed_m_s"], 0.0, 0.05, "no backward (reverse) speed was ever produced"
+	# The real backup: the rig backs down the alley past the 1.0 m target and
+	# the trailer ends inside the alley.
+	assert_true(r["reverse_completed"], "the backup completes: delta_z <= -1.0 m in 900 ticks")
+	assert_lt(r["delta_z_m"], -1.0, "the drive axle backed down the alley (negative delta_z)")
+	assert_gt(r["peak_reverse_speed_m_s"], 0.5, "a real reverse speed was measured")
+	assert_lt(r["peak_forward_speed_m_s"], 0.1, "the rig never drives forward")
+	assert_true(
+		r["trailer_in_alley"],
+		"the trailer ends inside the alley (z and x box corners within the pinned walls)"
 	)
 
 	# No wall contact, strictly positive clearance on both walls (the alley
 	# straight-passage fits), and the run stayed in bounds.
-	assert_eq(r["wall_contacts"], 0, "no wall contact")
+	assert_eq(r["wall_contacts"], 0, "no wall contact during the backup pass")
 	assert_gt(r["min_clear_west_m"], 0.0, "clearance to the west wall strictly positive")
 	assert_gt(r["min_clear_east_m"], 0.0, "clearance to the east wall strictly positive")
 	assert_true(r["fits_8m"], "the measured sweep fits the pinned 8.0 m alley")
 	assert_false(r["out_of_bounds"], "the run stayed in bounds")
 
-	# The fitted-width read is consistent and the sweep is well below 8.0 m.
-	assert_gt(r["swept_width_m"], 0.0, "swept width is positive")
+	# The swept width from the real backup: body-width dominated (~2.59 m
+	# trailer), far below the 8.0 m alley. Pinned against the measured value with
+	# a 2 percent band (cross-process runs drift at the third significant digit).
+	assert_almost_eq(r["swept_width_m"], 2.59, 0.05, "swept width is the measured ~2.59 m")
 	assert_lt(r["swept_width_m"], 8.0, "the swept width is far below the 8.0 m alley")
 	assert_almost_eq(
 		r["min_width_with_margin_m"],
@@ -63,4 +80,4 @@ func test_s1_alley_reverse_cannot_back_down_drivetrain_reverse_drives_forward() 
 		1e-3,
 		"fitted width = swept width + 2 x stated margin"
 	)
-	assert_true(r["pass"], "scenario RESULT = PASS (measured, honest)")
+	assert_true(r["pass"], "scenario RESULT = PASS (measured, real backup)")

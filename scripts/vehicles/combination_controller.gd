@@ -741,9 +741,12 @@ func _drive_wheel_torque(total_ratio: float = 0.0) -> float:
 	# constant.
 	if throttle > 0.0 and engine_rpm >= PHYSICS_CONSTANTS.ENGINE_REDLINE_RPM:
 		return 0.0  # rev limiter: fuel cut at the pinned redline
-	return DrivelineModel.wheel_torque_nm(
+	var torque: float = DrivelineModel.wheel_torque_nm(
 		engine_nm, throttle, ratio, 1.0 - _clutch_engagement(), _drive_forward_speed()
 	)
+	if transmission.gear == -1:
+		torque = -torque  # AS4o (D59): gear R drives against the heading
+	return torque
 
 
 func _clutch_engagement() -> float:
