@@ -154,3 +154,180 @@ The CI "S1 alley-reverse (A9)" step re-runs the scenario headless and greps
   remain open.
 - AirSystem.consume_psi() still has no production caller.
 - jackknifed latches with no release path; the coupler has no release input.
+
+============================================================================
+AS4p / A12: re-point the S1 alley-reverse scenario to the pinned acceptance
+definition (full 67 m drive-axle crossing from the pinned spawn, simulated
+time gated against the 120 s limit)
+============================================================================
+
+Repo state: main @ 5231bd5. Touched files: tests/sim/scenario_s1_alley.gd
+(re-pointed), tests/unit/test_scenario_s1_alley.gd (re-pointed),
+tests/scratch/s1_full_pass_probe.gd (+ .tscn, new, gitignored, measured the
+crossing before the tick budget was pinned) and this evidence file. No
+production code changed: scripts/ is untouched (combination_controller.gd
+still exactly 1000 lines, gdlint clean), no PHYSICS_CONSTANTS value added or
+changed. gdformat --check and gdlint are clean on every touched file.
+
+## The pinned A12 definition (phase1 prompt sections 7/9/15/19)
+
+- Section 7: alley corridor 8.0 m wide, inner faces x = -32.0 and x = -40.0,
+  z = -15..45, open gate at the south end; alley challenge spawn (-36, 0, -22),
+  heading 0 deg.
+- Section 9 (challenge 2, Alley reverse): "Reverse 60 m straight through the
+  8.0 m alley to the north gate line z = 45. Gold 90 s, silver 150 s, bronze
+  240 s, 0 strikes each."
+- Section 15: "S1 alley reverse: scripted reverse completes the 60 m alley in
+  under 120 simulated seconds with 0 wall strikes."
+- A12: "S1 passes: 60 m alley reverse, 0 strikes."
+
+What the pre-AS4p scenario did not cover: it placed the rig at the wrong end
+(drive axle z = +44.0, heading 180 deg) and backed only 900 ticks (7.5 s,
+11.818 m) toward the open south end, and never reported a simulated time. It
+carried the A9 minimum-street-width evidence (swept width ~2.59 m) but did
+not satisfy A12 as written.
+
+## What the re-pointed scenario does (tests/sim/scenario_s1_alley.gd)
+
+- Spawns at PHYSICS_CONSTANTS.SPAWN_ALLEY_POS (-36.0, 0.0, -22.0) with
+  heading SPAWN_ALLEY_HEADING_DEG (0.0 deg) -- read from the pinned
+  constants, not restated as literals.
+- Engages reverse from rest through the 0.5 m/s reverse speed gate
+  (request_gear(-1), the D59-fixed drivetrain), then drives the fixed,
+  checksummed per-step input (throttle 0.3, steer 0.0, no brake, no retarder
+  -- same shape and same throttle as the AS4n/AS4o script) through the
+  controller's existing scripted_input Callable until the tractor drive axle
+  (the tractor body origin: TRACTOR_REAR_AXLE is local (0, 0.563, 0)) reaches
+  the north gate line z = ALLEY_MAX_Z (45.0), or the tick budget expires.
+  The gate line is a measurement line, not a wall: the yard has no barrier
+  across the alley at z = +45.
+- Tick budget, sized with shown arithmetic (in the file): at the measured
+  steady reverse speed 3.4472 m/s the 67.0 m crossing (7.0 m from the spawn
+  to the alley's open south end z = -15, plus the 60.0 m alley) needs
+  67.0 / 3.4472 ~= 19.4 s ~= 2330 ticks; A12 allows 120 s at the pinned
+  120 Hz step = 14400 ticks, ~6.2x the measured crossing. The pass ends
+  early at the gate line; the budget only bounds a failed crossing (which
+  would report the shortfall and RESULT = FAIL). Script checksum (14400
+  records): 6497334646422567525.
+- Wall contact is counted by body_entered on the "wall" group (same
+  collision-notify method as before), during the pass only. The D19 strike
+  proxy is mirrored from production (Jolt exposes no per-contact impulse to
+  GDScript; the production rule counts a wall contact above 1 m/s as a
+  strike, combination_controller._on_body_entered), so strikes are reported
+  the way the game scores them.
+- RESULT = PASS gates on: gate line crossed, simulated crossing time under
+  the 120 s A12 limit, 0 wall contacts, 0 strikes (D19 proxy), strictly
+  positive clearance on both walls, out_of_bounds() false.
+- The reverse steer-sign diagnostic (steer +0.5 in gear R, 150 ticks) runs
+  after the pass with the _measuring_contacts flag down, so it cannot add
+  contacts to the pass count.
+
+## Measured A12 acceptance (godot 4.7.2-stable, headless,
+LIBGL_ALWAYS_SOFTWARE=1)
+
+Full pass, tests/sim/scenario_s1_alley.tscn, two fresh standalone processes
+(the two columns are the two processes):
+
+    S1 ALLEY-REVERSE (A12)  steps=2820 / 2821  hz=120
+    spawn = (-36.0, 0.0, -22.0) heading 0.0 deg (pinned constants)
+    reverse gate: pre-shift speed=0.0114 / 0.0057 m/s (<=0.50),
+                  engaged=true, reject=''
+    A12 crossing: gate line z=45.0, crossed=true at tick 2820 / 2821
+                  = 23.500 / 23.508 s (limit 120 s, under=true)
+    drive axle: start z=-22.001 / -21.999 -> final z=45.001 / 45.027,
+                distance=67.002 / 67.026 m, gap to line=+0.001 / +0.027 m
+    peak reverse speed = 3.4520 m/s   peak forward speed = 0.0000 m/s
+    peak articulation  = +0.0064 / +0.0060 rad (+0.366 / +0.346 deg)
+    trailer final z extent = 41.589..57.761 / 41.613..57.786 m (alley -15..45)
+    swept width = 2.7171 / 2.7044 m (min x -37.311 / -37.319,
+                                    max x -34.594 / -34.615)
+    min clearance: west 2.6890 / 2.6809 m, east 2.5940 / 2.6147 m
+                   (strictly positive)
+    wall contact = 0, max contact speed = 0.000 m/s,
+                   strikes (D19 proxy >1 m/s) = 0
+    out_of_bounds = false
+    RESULT = PASS
+
+Probe (tests/scratch/s1_full_pass_probe.tscn, one process): crossing at tick
+2820 = 23.500 s, distance 67.008 m, steady reverse (last 1.0 s window)
+3.4472 m/s, whole-run average 2.8514 m/s, peak 3.4520 m/s, min clearance
+west 2.6852 / east 2.6879 m, 0 contacts, oob false.
+
+Reading the numbers:
+- The A12 number is the simulated crossing time: 23.50 s against the 120 s
+  limit -- 5.1x margin. The longitudinal motion is stable to the tick across
+  processes (2820 vs 2821 ticks; 23.500 vs 23.508 s; distance 67.002..67.026
+  m in every run).
+- 0 wall contacts, hence 0 strikes under the D19 proxy: the stronger
+  statement, since Jolt exposes no per-contact force to GDScript (D19) and
+  the 15 kN STRIKE_FORCE_N threshold is applied in production via the
+  >1 m/s speed proxy. Max contact speed is 0.000 m/s because there were no
+  contacts at all.
+- The whole combination clears the line: the trailer's rearmost point (the
+  leading point in reverse) ends ~12.8 m past the gate line (trailer z
+  extent 41.6..57.8 m); 3.4 m of the trailer's length remains inside the
+  alley's z range at the end.
+- The lateral sweep varies by process (2.5960..3.0424 m observed across six
+  processes: fresh GUT, three standalone, two full-suite GUT) while every
+  wall clearance stays >= ~2.27 m: Jolt cross-process variance (D58 family,
+  here integrated over a 23.5 s run) shifts a slow lateral drift. The
+  acceptance statement is the alley fit: swept width 2.6..3.0 m against the
+  pinned 8.0 m, with >= ~2.27 m to spare on the tighter (east) wall. The
+  unit test therefore gates the sweep on a documented percentage-style band
+  (2.4..3.4 m) plus the alley-fit and clearance asserts, not a tight pin.
+
+## Test re-point and unit suite
+
+tests/unit/test_scenario_s1_alley.gd now asserts the acceptance: spawn at
+the pinned constants, reverse engaged from rest through the speed gate, gate
+line crossed, simulated crossing time under the 120 s A12 limit, the full
+67.0 m distance (60 m alley + 7 m approach), a real reverse (peak > 0.5 m/s,
+peak forward < 0.1 m/s), 0 wall contacts, 0 strikes (D19 proxy), strictly
+positive clearance on both walls, the trailer's rear end past the gate line,
+in bounds, the swept-width band (2.4..3.4 m), the alley-fit and margin
+consistency asserts, and the scenario's own RESULT = PASS.
+
+Unit suite (after the re-point): 33 scripts / 226 tests / 226 passing /
+6512 asserts (baseline at 5231bd5: 33 / 226 / 226 / 6503; the re-pointed
+test carries +9 asserts).
+
+## Prove nothing else moved (before/after at 5231bd5)
+
+  gate                     baseline (parent, 5231bd5)     this slice
+  GUT unit suite           33 scripts / 226 tests /       33 scripts / 226 tests /
+                           226 passing / 6503 asserts     226 passing / 6512 asserts
+  golden_run.tscn          hash[0] =                      hash[0] = -6560153892126430127,
+                           8854452021323696558,            hash[1] = 373496036312695534,
+                           envelope 48.650 mm,             envelope 54.614 mm (step 292),
+                           RESULT = PASS                   script_checksum
+                                                          -3906951085624927155 (identical),
+                                                          RESULT = PASS
+  smoke_controls.tscn      SMOKE OK                       SMOKE OK
+                           (actions=135 speed=0.052       (actions=135 speed=0.052
+                           gear=1, identical line)        gear=1, identical line)
+  probe_kingpin_window     kp_gap=0.008                   kp_gap=0.008 (identical line)
+  stop-distance probe      loaded gear-4 stop             loaded gear-4 stop 28.63 / 28.62 /
+                           28.57 to 28.62 m               28.62 / 28.69 m (r0..r3),
+                                                          within D56's documented
+                                                          28.53..28.69 m range and
+                                                          the spec's 24..34 m band
+
+Golden run: D58 documents that Godot 4.7's Jolt is not bit-deterministic and
+that the in-process envelope takes DISCRETE values from a small bounded set
+(32.288 / 39.346 / 46.566 / 48.650 / 54.614 / 55.620 mm across 23 samples);
+the gate is the envelope (bound 200 mm) plus out_of_bounds, and the hashes
+are gross-regression sentinels, not a byte-identity contract. This run
+landed on hash[0] = -6560153892126430127 with a 54.614 mm envelope -- both
+the hash and the envelope value are individually documented D58 states (the
+parent's own repeats measured -6560153892126430127 at 63.686 mm and
+8854452021323696558 at 39.346 mm). The script checksum is identical, so the
+golden input is unchanged; this slice touches no file the golden run loads.
+
+Smoke: SMOKE OK, the gate line, identical to baseline. This process also
+printed a Godot exit-time warning ("1 ObjectDB instance was leaked at exit")
+that earlier evidence captures do not show; the smoke process loads no file
+touched by this slice, so the warning is not attributable to the change. It
+is recorded here rather than silently dropped.
+
+Formatting/lint: gdformat --check scripts tests and gdlint scripts
+tests/unit tests/sim are clean.

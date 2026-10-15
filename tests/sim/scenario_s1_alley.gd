@@ -1,7 +1,21 @@
 extends Node3D
-## S1 alley-reverse scenario (A9: phase2-plan line 41; world-spec minimum street
-## width, section 4 `alley` class). No scenario scripts existed before this one;
-## `ls tests/sim/` held only harnesses, probes and shots.
+## S1 alley-reverse scenario, pinned to acceptance A12 (phase1 prompt section 15
+## and section 19): "scripted reverse completes the 60 m alley in under 120
+## simulated seconds with 0 wall strikes. A12: S1 passes: 60 m alley reverse,
+## 0 strikes."
+##
+## The maneuver, exactly as the pinned yard and challenge define it
+## (section 7, section 9 challenge 2):
+##   * spawn at the pinned alley challenge spawn, SPAWN_ALLEY_POS
+##     (-36.0, 0.0, -22.0), heading SPAWN_ALLEY_HEADING_DEG (0.0 deg) -- both
+##     read from PHYSICS_CONSTANTS, never restated here;
+##   * engage reverse from rest (the 0.5 m/s reverse speed gate, section 5.3)
+##     and drive a fixed, checksummed per-step input script until the tractor
+##     drive axle reaches the north gate line z = ALLEY_MAX_Z (45.0), or until
+##     the tick budget below expires;
+##   * the drive axle travels 67.0 m in total: 7.0 m from the spawn to the
+##     alley's open south end (ALLEY_MIN_Z = -15.0), then the 60.0 m alley to
+##     the north gate line.
 ##
 ## Reuses the shared combination harness (tests/sim/combination_rest_harness.gd)
 ## for the rig and builds the two alley walls at their pinned geometry
@@ -13,37 +27,37 @@ extends Node3D
 ## The maneuver is a scripted, fixed per-step input drive (the same shape as
 ## tests/sim/golden_run.gd: deterministic records, no RNG, an FNV-1a script
 ## checksum, driven through the controller's existing scripted_input Callable):
-## start the combination at the alley mouth, reverse it down the 8.0 m alley from
-## the z=+45 end toward z=-15, and measure
-##   1. minimum clearance per wall from the OUTERMOST body-box points (swept width,
-##      not the origin)
-##   2. whether any wall contact happened during the backup pass (collision-notify:
-##      body_entered on the "wall" group)
-##   3. peak articulation and peak reverse speed
-##   4. whether the trailer ends inside the alley (box corners in x and z)
-##   5. the fitted alley width the measured sweep clears, and whether the pinned
-##      8.0 m alley fits
-##   6. out_of_bounds() at the end (the AS4l2 helper)
+## throttle REVERSE_THROTTLE, steer 0.0 (a straight alley pass -- the `alley`
+## class is straight-running-only per world-spec section 4), no brake, no
+## retarder. The "drive axle" is the tractor body origin: TRACTOR_REAR_AXLE
+## sits at local (0, 0.563, 0) and the suspension/tire forces lever from the
+## body origin, so tractor.global_position.z is the drive axle z.
 ##
-## AS4o (D59) re-point: the drivetrain reverse-direction fix (gear R sign-flips
-## the drive-wheel torque in combination_controller.gd) makes this a REAL
-## completed backup. Measured (b95f299 + fix): delta_z -11.818 m over 900 ticks,
-## peak reverse speed 3.3885 m/s, swept width 2.5935 m, min clearance west
-## 2.7043 m / east 2.7022 m, wall contacts 0, trailer ends inside the alley
-## (z 19.43..35.58 within the -15..+45 alley), out_of_bounds false.
+## History: AS4n built this scenario against the 900-tick partial backup from
+## the z=+44 end (11.8 m, from the wrong end and spawn; A9). AS4o (D59) made
+## gear R a real reverse. AS4p (this) re-points it to the pinned A12
+## acceptance: full 67 m drive-axle crossing from the pinned spawn, with the
+## simulated crossing time reported against the 120 s limit.
 
 const _HARNESS_SCENE: String = "res://tests/sim/combination_rest_harness.tscn"
 
 ## Pinned physics step (Hz). project.godot sets 120.
 const PHYSICS_HZ: float = 120.0
-## Length of the scripted reverse attempt (ticks). 900 ticks = 7.5 s.
-const MANEUVER_TICKS: int = 900
+## A12's simulated-time limit for the alley reverse (section 15).
+const A12_LIMIT_S: float = 120.0
+## Tick budget for the scripted reverse: the full A12 limit at the pinned
+## 120 Hz step = 120 s x 120 Hz = 14400 ticks. Sizing arithmetic: at the
+## measured steady reverse speed ~3.4 m/s (3.4520 m/s peak, full-pass probe
+## tests/scratch/s1_full_pass_probe.gd; 3.3885 m/s peak in the AS4o 900-tick
+## run) the 67 m crossing needs 67.0 / 3.4 ~= 19.7 s ~= 2364 ticks, and the
+## measured crossing is 23.508 s (2821 ticks). The full 120 s budget is ~6x
+## the measured crossing, clearly larger than the requirement. The pass ends
+## early at the gate line; the budget only bounds a failed crossing (in which
+## case the run reports the shortfall and RESULT = FAIL).
+const MANEUVER_TICKS: int = int(A12_LIMIT_S * PHYSICS_HZ)
 ## Throttle held during the reverse attempt (0..1). Moderate: the high reverse
-## ratio (8.315) already makes it a creep.
+## ratio (8.315) already makes it a creep. Same value the AS4n/AS4o script used.
 const REVERSE_THROTTLE: float = 0.3
-## A completed back-down is a backward (toward -15) displacement of the drive
-## axle of at least this much. The real backup covers ~11.8 m in the budget.
-const REVERSE_TARGET_M: float = 1.0
 ## Handling margin per side used for the fitted-width read, matching the
 ## world-spec section 2 clearance term (half body 1.30 + plate drift 0.44 +
 ## 0.50 handling margin). Stated in the report.
@@ -55,12 +69,16 @@ const EAST_FACE_X: float = PHYSICS_CONSTANTS.ALLEY_INNER_X_EAST  # -32.0
 const ALLEY_MIN_Z: float = PHYSICS_CONSTANTS.ALLEY_MIN_Z  # -15.0
 const ALLEY_MAX_Z: float = PHYSICS_CONSTANTS.ALLEY_MAX_Z  # +45.0
 
-## Start placement: at the alley mouth, centreline x, facing +Z (heading 180) so
-## the trailer leads into the alley (rear toward -15) -- the orientation a real
-## alley backup needs. Drive axle 1 m inside the gate.
-const START_X: float = -36.0
-const START_Z: float = 44.0
-const START_HEADING_DEG: float = 180.0
+## The D19 strike proxy speed threshold (m/s), mirroring the production rule in
+## combination_controller._on_body_entered: a wall contact above this speed
+## counts as a strike. Jolt exposes no per-contact impulse to GDScript (D19).
+const STRIKE_PROXY_SPEED_M_S: float = 1.0
+
+## North gate line for A12 (section 9 challenge 2): the drive axle must reach
+## z = ALLEY_MAX_Z. The gate line is a measurement line, not a wall: the yard
+## has no barrier across the alley at z = +45 (test_yard._build_alley places
+## only the two side walls).
+const GATE_LINE_Z: float = ALLEY_MAX_Z
 
 ## 64-bit FNV-1a, same fold as golden_run.gd (see D58).
 const _FNV_OFFSET: int = -3750763034362895579
@@ -70,9 +88,16 @@ const _DECIM: int = 1000000
 var _h: Node
 var _controller: Node
 var _wall_contacts: int = 0
-## Wall contacts count only during the 900-tick backup pass. The reverse steer
-## sign diagnostic that follows it is a separate measurement and must not be
-## able to touch a wall to sink the backup's contact count.
+## D19 strike proxy (matching the production controller, combination_controller
+## _on_body_entered): Jolt does not expose per-contact impulse to GDScript, so a
+## wall contact counts as a strike when the combination speed exceeds
+## STRIKE_PROXY_SPEED_M_S (1.0 m/s). We record the max contact speed so the
+## report can state honestly whether any contact could have been a strike.
+var _max_contact_speed_m_s: float = 0.0
+var _strikes: int = 0
+## Wall contacts count only during the reverse pass. The reverse steer sign
+## diagnostic that follows it is a separate measurement and must not be able
+## to touch a wall to sink the pass's contact count.
 var _measuring_contacts: bool = true
 
 # ---------------------------------------------------------------------------
@@ -82,7 +107,8 @@ var _measuring_contacts: bool = true
 
 ## Fixed per-step drive: throttle REVERSE_THROTTLE, steer 0.0 (a straight alley
 ## pass -- the `alley` class is straight-running-only per world-spec section 4),
-## no brake, no retarder. No RNG.
+## no brake, no retarder. No RNG. One identical record per budget tick, so the
+## checksum is fixed even though the pass ends early at the gate line.
 static func _build_script() -> Array:
 	var s: Array = []
 	for _i in MANEUVER_TICKS:
@@ -161,13 +187,14 @@ func _add_wall(wall_name: String, min_corner: Vector3, max_corner: Vector3) -> v
 
 
 func _place_rig() -> void:
-	## Place the combination through the shared harness at the alley mouth. The
+	## Place the combination at the pinned alley challenge spawn
+	## (PHYSICS_CONSTANTS.SPAWN_ALLEY_POS, SPAWN_ALLEY_HEADING_DEG). The
 	## controller carries the world transform; place_at_rest() settles y and
-	## rebuilds the kingpin joint at the (rotated) fifth wheel, so the heading is
-	## respected without forking a rig builder.
+	## rebuilds the kingpin joint at the (rotated) fifth wheel, so the heading
+	## is respected without forking a rig builder.
 	var c: Node = _controller
-	c.global_position = Vector3(START_X, 0.0, START_Z)
-	c.rotation = Vector3(0.0, deg_to_rad(START_HEADING_DEG), 0.0)
+	c.global_position = PHYSICS_CONSTANTS.SPAWN_ALLEY_POS
+	c.rotation = Vector3(0.0, deg_to_rad(PHYSICS_CONSTANTS.SPAWN_ALLEY_HEADING_DEG), 0.0)
 	c.place_at_rest()
 
 
@@ -179,6 +206,13 @@ func _track_wall_contacts() -> void:
 func _on_body_entered(body: Node) -> void:
 	if _measuring_contacts and body != null and body.is_in_group("wall"):
 		_wall_contacts += 1
+		# D19: read the combination speed at the instant of contact. Jolt will
+		# not hand back a per-contact impulse, so the production strike rule is
+		# this speed proxy; we mirror it so the pass reports strikes honestly.
+		var s: float = _controller.speed() if _controller != null else 0.0
+		_max_contact_speed_m_s = maxf(_max_contact_speed_m_s, s)
+		if s > STRIKE_PROXY_SPEED_M_S:
+			_strikes += 1
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +256,7 @@ func _box_z_extent(body: RigidBody3D, center_local: Vector3, half: Vector3) -> A
 # ---------------------------------------------------------------------------
 
 
-## Run the S1 alley-reverse maneuver and return the measured result dict.
+## Run the S1 alley-reverse maneuver (A12) and return the measured result dict.
 ## Awaitable. Public so the unit test drives it.
 func run(_root: Node) -> Dictionary:
 	var t0: int = Time.get_ticks_msec()
@@ -237,9 +271,9 @@ func run(_root: Node) -> Dictionary:
 	_track_wall_contacts()
 	await _settle(60)
 
-	# Reverse speed gate: the rig is at rest (settled on the brake). Engage R and
-	# record the pre-shift speed and whether the gate accepted it on the first
-	# attempt.
+	# Reverse speed gate: the rig is at rest (settled on the brake). Engage R
+	# and record the pre-shift speed and whether the gate accepted it on the
+	# first attempt.
 	var pre_speed: float = _controller.speed()
 	_controller.request_gear(-1)
 	var reverse_engaged: bool = _controller.transmission.gear == -1
@@ -262,17 +296,20 @@ func run(_root: Node) -> Dictionary:
 	var peak_reverse_speed: float = 0.0
 	var peak_forward_speed: float = 0.0
 	var peak_artic_at: int = -1
+	var crossing_tick: int = -1
 	var z_trace: Array = []
 	var x_trace: Array = []
 	var oob: bool = false
 	var final_min_x: float = 0.0
 	var final_max_x: float = 0.0
+	var ticks_driven: int = MANEUVER_TICKS
 
 	for step in MANEUVER_TICKS:
 		await get_tree().physics_frame
 		var c: Node = _controller
 		var tz: float = c.tractor.global_position.z
-		# Forward component along the heading; reverse = -forward (toward -Z here).
+		# Forward component along the heading; reverse = -forward (toward +Z
+		# here, since the spawn heading 0.0 deg faces -Z).
 		var fwd: Vector3 = -c.tractor.global_basis.z
 		var vdot_fwd: float = c.tractor.linear_velocity.dot(fwd)
 		peak_forward_speed = maxf(peak_forward_speed, maxf(vdot_fwd, 0.0))
@@ -292,26 +329,39 @@ func run(_root: Node) -> Dictionary:
 		min_clear_east = minf(min_clear_east, EAST_FACE_X - maxx)
 		final_min_x = minx
 		final_max_x = maxx
-		if step % 90 == 0 or step == MANEUVER_TICKS - 1:
+		if step % 120 == 0:
 			z_trace.append("%d:%.3f" % [step, tz])
 			x_trace.append("%d:[%.3f,%.3f]" % [step, minx, maxx])
 		if _h.out_of_bounds():
 			oob = true
+		# A12: the pass is complete when the drive axle reaches the north
+		# gate line. End early; the budget above only bounds a failure.
+		if crossing_tick < 0 and tz >= GATE_LINE_Z:
+			crossing_tick = step
+			break
+	ticks_driven = crossing_tick if crossing_tick >= 0 else MANEUVER_TICKS
+	if crossing_tick >= 0:
+		z_trace.append("%d:%.3f" % [crossing_tick, _controller.tractor.global_position.z])
+		x_trace.append("%d:[%.3f,%.3f]" % [crossing_tick, final_min_x, final_max_x])
 
-	# End-of-pass trailer extent (the "trailer ends inside the alley" check).
+	# End-of-pass trailer extent (the "trailer's final z extent inside the
+	# alley" read).
 	var c_end: Node = _controller
 	var final_drive_z: float = c_end.tractor.global_position.z
-	var delta_z: float = final_drive_z - start_drive_z
-	# A back-down toward -15 is a negative delta_z: the real backup.
-	var reverse_completed: bool = delta_z < -REVERSE_TARGET_M
+	var distance_travelled_m: float = final_drive_z - start_drive_z
+	# The gate crossing, stated as a boolean plus the signed gap: positive when
+	# the drive axle ended past the line, negative when it fell short.
+	var gate_crossed: bool = final_drive_z >= GATE_LINE_Z
+	var drive_gate_gap_m: float = final_drive_z - GATE_LINE_Z
+	# The A12 number: simulated seconds for the crossing, against the 120 s
+	# limit.
+	var crossing_time_s: float = crossing_tick / PHYSICS_HZ if crossing_tick >= 0 else -1.0
+	var under_a12_limit: bool = crossing_tick >= 0 and crossing_time_s < A12_LIMIT_S
 	var vz: Array = _box_z_extent(c_end.trailer, PHYSICS_CONSTANTS.TRAILER_BOX_CENTER, trailer_half)
 	var trailer_min_z: float = vz[0] as float
 	var trailer_max_z: float = vz[1] as float
-	var trailer_in_alley: bool = (
-		trailer_min_z >= ALLEY_MIN_Z
-		and trailer_max_z <= ALLEY_MAX_Z
-		and final_min_x >= WEST_FACE_X
-		and final_max_x <= EAST_FACE_X
+	var trailer_in_alley_z_m: float = (
+		minf(trailer_max_z, ALLEY_MAX_Z) - maxf(trailer_min_z, ALLEY_MIN_Z)
 	)
 
 	# Fitted width from the measured sweep.
@@ -323,25 +373,33 @@ func run(_root: Node) -> Dictionary:
 		(min_x_all >= WEST_FACE_X + FIT_MARGIN_M) and (max_x_all <= EAST_FACE_X - FIT_MARGIN_M)
 	)
 
-	# Reverse steer sign diagnostic: a short steer +0.5 hold in gear R records the
-	# trailer's articulation sign (the "trailer steers the other way in reverse"
-	# trap). Done after the main pass so it does not perturb the sweep, and outside
-	# the wall-contact window.
+	# Reverse steer sign diagnostic: a short steer +0.5 hold in gear R records
+	# the trailer's articulation sign (the "trailer steers the other way in
+	# reverse" trap). Done after the main pass so it does not perturb the
+	# sweep, and outside the wall-contact window.
 	_measuring_contacts = false
 	var steer_sign_artic: float = await _reverse_steer_sign()
 
 	var result: Dictionary = {
 		"script_checksum": script_checksum(),
-		"steps": MANEUVER_TICKS,
+		"steps": ticks_driven,
+		"tick_budget": MANEUVER_TICKS,
 		"physics_hz": Engine.get_physics_ticks_per_second(),
 		"pre_shift_speed_m_s": pre_speed,
 		"reverse_engaged": reverse_engaged,
 		"reverse_reject": reverse_reject,
-		"reverse_completed": reverse_completed,
-		"reverse_target_m": REVERSE_TARGET_M,
+		"spawn_pos": PHYSICS_CONSTANTS.SPAWN_ALLEY_POS,
+		"spawn_heading_deg": PHYSICS_CONSTANTS.SPAWN_ALLEY_HEADING_DEG,
+		"gate_line_z": GATE_LINE_Z,
+		"crossing_tick": crossing_tick,
+		"crossing_time_s": crossing_time_s,
+		"a12_limit_s": A12_LIMIT_S,
+		"under_a12_limit": under_a12_limit,
+		"gate_crossed": gate_crossed,
 		"start_drive_z": start_drive_z,
 		"final_drive_z": final_drive_z,
-		"delta_z_m": delta_z,
+		"distance_travelled_m": distance_travelled_m,
+		"drive_gate_gap_m": drive_gate_gap_m,
 		"peak_forward_speed_m_s": peak_forward_speed,
 		"peak_reverse_speed_m_s": peak_reverse_speed,
 		"peak_artic_rad": peak_artic_rad,
@@ -350,7 +408,7 @@ func run(_root: Node) -> Dictionary:
 		"steer_sign_artic_deg": steer_sign_artic,
 		"trailer_min_z_m": trailer_min_z,
 		"trailer_max_z_m": trailer_max_z,
-		"trailer_in_alley": trailer_in_alley,
+		"trailer_in_alley_z_m": trailer_in_alley_z_m,
 		"min_x_all": min_x_all,
 		"max_x_all": max_x_all,
 		"swept_width_m": swept_width,
@@ -362,18 +420,20 @@ func run(_root: Node) -> Dictionary:
 		"fits_8m": fits_8m,
 		"fits_8m_with_margin": fits_8m_with_margin,
 		"wall_contacts": _wall_contacts,
+		"max_contact_speed_m_s": _max_contact_speed_m_s,
+		"strikes": _strikes,
 		"out_of_bounds": oob,
 		"z_trace": z_trace,
 		"x_trace": x_trace,
 	}
-	# PASS: a real completed backup -- the reverse engaged from rest, the rig
-	# backed down past the 1.0 m target, the trailer ended inside the alley, no
-	# wall contact, strictly positive clearance on both walls, in bounds.
+	# A12: gate line crossed, simulated time under the 120 s limit, 0 wall
+	# contacts (hence 0 strikes, the D19 proxy), strictly positive clearance on
+	# both walls, in bounds.
 	result["pass"] = (
-		reverse_engaged
-		and reverse_completed
-		and trailer_in_alley
+		gate_crossed
+		and under_a12_limit
 		and _wall_contacts == 0
+		and _strikes == 0
 		and min_clear_west > 0.0
 		and min_clear_east > 0.0
 		and not oob
@@ -433,8 +493,24 @@ func _ready() -> void:
 
 
 func _report(r: Dictionary, wall_ms: int) -> void:
-	print("S1 ALLEY-REVERSE  steps=%d  hz=%.0f  wall=%dms" % [r["steps"], r["physics_hz"], wall_ms])
-	print("  script_checksum = %d (%d records)" % [r["script_checksum"], r["steps"]])
+	print(
+		(
+			"S1 ALLEY-REVERSE (A12)  steps=%d  hz=%.0f  wall=%dms"
+			% [r["steps"], r["physics_hz"], wall_ms]
+		)
+	)
+	print(
+		(
+			"  spawn = (%.1f, %.1f, %.1f) heading %.1f deg (pinned SPAWN_ALLEY_POS/HEADING)"
+			% [
+				r["spawn_pos"].x,
+				r["spawn_pos"].y,
+				r["spawn_pos"].z,
+				r["spawn_heading_deg"],
+			]
+		)
+	)
+	print("  script_checksum = %d (%d budget records)" % [r["script_checksum"], r["tick_budget"]])
 	print(
 		(
 			"  reverse gate: pre-shift speed=%.4f m/s (<=%.2f), engaged=%s, reject='%s'"
@@ -448,8 +524,26 @@ func _report(r: Dictionary, wall_ms: int) -> void:
 	)
 	print(
 		(
-			"  reverse result: completed=%s (delta_z=%+.3f m over %d ticks, target back-down <= %.1f m)"
-			% [str(r["reverse_completed"]), r["delta_z_m"], r["steps"], -r["reverse_target_m"]]
+			"  A12 crossing: gate line z=%.1f, crossed=%s at tick %d = %.3f s (limit %.0f s, under=%s)"
+			% [
+				r["gate_line_z"],
+				str(r["gate_crossed"]),
+				r["crossing_tick"],
+				r["crossing_time_s"],
+				r["a12_limit_s"],
+				str(r["under_a12_limit"])
+			]
+		)
+	)
+	print(
+		(
+			"  drive axle: start z=%.3f -> final z=%.3f, distance=%.3f m, gap to gate line=%+.3f m"
+			% [
+				r["start_drive_z"],
+				r["final_drive_z"],
+				r["distance_travelled_m"],
+				r["drive_gate_gap_m"]
+			]
 		)
 	)
 	print(
@@ -466,13 +560,13 @@ func _report(r: Dictionary, wall_ms: int) -> void:
 	)
 	print(
 		(
-			"  trailer end-of-pass z extent = %.3f .. %.3f m (alley %.0f .. %.0f), inside alley = %s"
+			"  trailer final z extent = %.3f .. %.3f m (alley %.0f .. %.0f), in-alley length = %.3f m"
 			% [
 				r["trailer_min_z_m"],
 				r["trailer_max_z_m"],
 				ALLEY_MIN_Z,
 				ALLEY_MAX_Z,
-				str(r["trailer_in_alley"])
+				r["trailer_in_alley_z_m"]
 			]
 		)
 	)
@@ -500,7 +594,20 @@ func _report(r: Dictionary, wall_ms: int) -> void:
 			]
 		)
 	)
-	print('  wall contact (body_entered on "wall", backup pass only): %d' % r["wall_contacts"])
+	# Jolt will not hand back a per-contact impulse from body_entered, so the
+	# 15 kN strike threshold (PHYSICS_CONSTANTS.STRIKE_FORCE_N) is not measured
+	# as a force. The production strike rule is the D19 speed proxy (a wall
+	# contact above 1 m/s counts as a strike); we mirror it, so strikes are
+	# reported the same way the game scores them. 0 contacts implies 0 strikes.
+	print(
+		(
+			(
+				'  wall contact (body_entered on "wall", pass only): %d, '
+				+ "max contact speed = %.3f m/s, strikes (D19 proxy >1 m/s) = %d"
+			)
+			% [r["wall_contacts"], r["max_contact_speed_m_s"], r["strikes"]]
+		)
+	)
 	print(
 		(
 			"  fitted width: zero-margin = %.4f m, +2x%.2f m margin = %.4f m"
