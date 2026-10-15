@@ -1,0 +1,13 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+S3 BRKING (A9)  hz=120  wall=11756ms  a9_window=24..34 m
+  script_checksum = -5703881247613297147 (1200 budget records)
+  cargo=29000 kg  v0=22.2222 m/s  stop_ticks_budget=1200
+  [pinned, manual gear 4]  stop = 28.96 m in 389 ticks = 3.242 s (within budget=true)
+     gear at brake=4  retarder stage=5  retarder live at brake=true (live ever=true)  [D56 trap]
+     peak decel = 10.979 m/s^2 (1.119 g)   peak wheel slip = 1.0028   ABS engaged=true
+     spin/vehicle min ratio = 1.0036  lock run=0 (sustained>=12) sustained lock=false
+     at rest at end=true (final speed 0.0494 m/s)   out_of_bounds=false
+  [auto, naive D56]       stop = 47.48 m in 534 ticks = 4.450 s  (within budget=true)
+     gear at brake=5  retarder live at brake=false  [gear 5 gates the retarder off, D56]
+  RESULT = PASS

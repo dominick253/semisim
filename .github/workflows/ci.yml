@@ -118,3 +118,20 @@ jobs:
             | tee s1_alley.log
           grep -q "RESULT = PASS" s1_alley.log
           grep -E "script_checksum|reverse gate|reverse result|peak|swept|clearance|contact|fitted|alley fits|out_of_bounds|RESULT" s1_alley.log
+
+      # A9: the S3 braking scenario. Reuses the combination harness, seeds the
+      # loaded combination (CARGO_MASS_MAX_KG) at 80 km/h in gear 4 (the top of
+      # the "gears 1-4" retarder window, so the retarder is live), applies full
+      # service brake + retarder stage 5, and gates on the measured stop
+      # distance inside the 24..34 m A9 window (the naive auto / D56 variant is
+      # measured in the same process and reported, not gated). Same timeout
+      # pattern as the sim steps above.
+      - name: S3 braking (A9)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -euo pipefail
+          timeout 300 "$GODOT" --headless --path . tests/sim/scenario_s3_braking.tscn \
+            | tee s3_braking.log
+          grep -q "RESULT = PASS" s3_braking.log
+          grep -E "script_checksum|stop =|gear at brake|retarder|peak decel|spin/vehicle|at rest|RESULT" s3_braking.log

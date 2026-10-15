@@ -1,0 +1,42 @@
+CITYHAUL Phase 1 acceptance evidence (phase1 prompt section 19)
+===================================================================
+Generated:  2026-10-15 03:04:01 UTC
+Host:       Dom-PC-2
+Godot:      godot-headless (LIBGL_ALWAYS_SOFTWARE=1, headless)
+Repo:       /home/dom/dev/games/semisim
+ACCEPTANCE_ALLOW_GIT=1 (A1/A2 external checks deferred when 0)
+
+GATES RUN (a FAIL here is what makes this script exit non-zero):
+  PASS  gut              34 scripts / 228 tests / 228 passing / 0 failing / 6526 asserts / 0 orphans
+  PASS  smoke            SMOKE OK line 1
+  PASS  golden           RESULT PASS  envelope 46.566 mm  hash[0] 8390135135899807633  (D58: envelope gate, not a fixed value)
+  PASS  s1               RESULT PASS  crossed=true at tick 2821 = 23.508 s
+  PASS  s3               RESULT PASS  pinned stop 28.96 m (window 24..34)
+  PASS  kingpin          kp_gap=0.008  steer-axle-under-cap ok=true
+  PASS  boot             ERROR lines=0  WARNING lines=0
+  PASS  model_tractor    tris 868 (cap 45000)  pivots: wheel_steer_R, wheel_steer_L, wheel_drive_R, wheel_drive_L, kingpin, fifth_plate, cab_eye
+  PASS  model_trailer    tris 680 (cap 35000)  pivots: trailer_ref, landing_contact, kingpin
+
+ACCEPTANCE TABLE (section 19 A1..A20; status from what this run observed):
+  A1    UNMET  external: public repo + pushed main + green CI needs gh auth and a CI run; not observable in the offline headless harness (no network).
+  A2    MET    git rev-list --count HEAD = 39 (>= 8).
+  A3    MET    model_report gate: tractor.glb 28 nodes, 7/7 tractor pivots present, 868 tris (<= 45000).
+  A4    MET    model_report gate: trailer.glb 12 nodes, 3/3 trailer pivots present, 680 tris (<= 35000).
+  A5    MET    tractor.tscn/trailer.tscn reference their .glb models (checked); the 8-wheel steer/rotate script assertion passes in the GUT suite (test_vehicle_visuals, 0 failures); rendered screenshots verified at capture (docs/evidence/phase1/camera_*.png).
+  A6    MET    project.godot: physics_engine="Jolt" and physics_ticks_per_second=120 both present.
+  A7    MET    GUT suite 0 failures (covers test_tire_model T1-T4, the exact-number tire asserts).
+  A8    MET    GUT suite 0 failures (covers test_physics_rules T6 load-shift, T7 inertia, T14 steer-axle limit).
+  A9    MET    scenario_s3_braking gate RESULT=PASS; pinned stop 28.96 m in the 24..34 m window (docs/evidence/phase1/s3_braking.txt).
+  A10   MET    GUT suite 0 failures (covers test_physics_rules T8 kingpin friction, T12 jackknife-locks-throttle).
+  A11   UNMET  S2 dock-backing scenario is not built yet (only S1 and S3 exist under tests/sim); T11 passes via the GUT suite, but A11 requires S2 as well.
+  A12   MET    scenario_s1_alley gate RESULT=PASS (crossed=true at tick 2821 = 23.508 s); 60 m alley reverse, 0 strikes (docs/evidence/phase1/s1_alley_reverse.txt).
+  A13   UNMET  S2 dock-backing gold criteria: the S2 scenario is not built yet (no dock-backing script under tests/sim).
+  A14   MET    golden_run gate RESULT=PASS: in-process envelope 46.566 mm <= 200 mm bound, in bounds. D58: Jolt is not bit-deterministic, so the gate is the transform envelope, not byte-identical hashes (docs/evidence/phase1/determinism.txt).
+  A15   MET    GUT suite: 228 tests (>= 14), 0 failures, 6526 asserts.
+  A16   MET    headless boot 600 frames: 0 ERROR, 0 WARNING lines (must be 0/0).
+  A17   UNMET  2 of 3 required screenshots exist (yard wide, cab view with mirrors); the mid-dock-backing screenshot needs the S2 dock-backing scenario, which is not built yet.
+  A18   MET    GUT audio tests pass with 0 failures (test_audio_behaviour engine-amplitude-vs-rpm; test_audio_squeal_hiss squeal-threshold); generator buffer dumps committed (docs/evidence/phase1/audio_waveform.png + audio_*_window.wav).
+  A19   MET    all section 18 docs files exist; ATTRIBUTION.md covers the known third-party sources (Kenney, ambientCG, Open Sans).
+  A20   UNMET  docs/phase1-end-state.md is not written yet (the Phase 1 exit deliverable, section 20).
+-------------------------------------------------------------------
+ACCEPTANCE: 15 met / 5 unmet
